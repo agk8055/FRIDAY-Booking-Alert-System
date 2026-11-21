@@ -16,6 +16,7 @@ env/
 ENV/
 
 # Output and log files
+logs/
 *.log
 monitor.log
 booking_opened.txt

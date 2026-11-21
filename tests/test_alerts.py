@@ -4,6 +4,14 @@ Run this script to verify that sound, desktop notifications, browser opening,
 and any configured remote alerts (Telegram, Discord, Email) work properly.
 """
 
+import os
+import sys
+from pathlib import Path
+
+# Add src/ to sys.path
+SRC_DIR = Path(__file__).resolve().parent.parent / "src"
+sys.path.insert(0, str(SRC_DIR))
+
 from config import config
 from notifier import dispatch_alerts
 
@@ -11,7 +19,7 @@ from notifier import dispatch_alerts
 def run_test():
     target = config.targets[0] if config.targets else None
     city = target.city if target else "Coimbatore"
-    theatres = target.target_theatres if target else ["Broadway Cinemas"]
+    theatres = [th.name for th in target.target_theatres] if target and target.target_theatres else ["Broadway Cinemas"]
 
     print("=" * 60)
     print("🔔 BookMyShow Alert System - Notification Tester")

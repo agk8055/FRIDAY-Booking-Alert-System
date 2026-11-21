@@ -1,3 +1,5 @@
+![FRIDAY Banner](assets/banner.png)
+
 # 🎬 FRIDAY — BookMyShow Booking Alert System
 
 **FRIDAY** is an intelligent, automated real-time alert system designed to monitor **BookMyShow** for movie ticket bookings and trigger instant multi-channel alerts the second ticket bookings open (audio alarm, Windows desktop notifications, Telegram, Discord, Email, custom webhooks, and auto-opening the booking page in your browser).
@@ -6,7 +8,7 @@
 
 ---
 
-## 📋 Adding Targets ([targets.txt](file:///c:/Users/alang/OneDrive/Desktop/FRIDAY-Booking%20Alert%20System/targets.txt))
+## 📋 Adding Targets ([targets.txt](targets.txt))
 
 You can monitor **multiple movies across different cities** simultaneously. Open [targets.txt](file:///c:/Users/alang/OneDrive/Desktop/FRIDAY-Booking%20Alert%20System/targets.txt) and paste any BookMyShow URL (one per line):
 
@@ -37,7 +39,7 @@ https://in.bookmyshow.com/cinemas/coimbatore/broadway-cinemas-coimbatore/BWCB
 
 ---
 
-## 🔔 Notification Channels ([.env](file:///c:/Users/alang/OneDrive/Desktop/FRIDAY-Booking%20Alert%20System/.env))
+## 🔔 Notification Channels ([.env.example](.env.example))
 
 Configure your preferences in `.env` (refer to `.env.example`):
 - 🔊 **Sound Alarm**: Loud looping audio alert when tickets drop.
@@ -50,16 +52,56 @@ Configure your preferences in `.env` (refer to `.env.example`):
 
 ---
 
-## ⚡ PC Performance & Background Optimization
+## ⚡ High-Speed Hybrid Engine (`curl_cffi` + Chrome Fallback)
 
-FRIDAY has been specifically engineered to run in the background on your personal PC for extended periods without slowing down gaming, browsing, or other tasks:
+FRIDAY is built with a dual-engine architecture for maximum speed and efficiency on personal PCs:
 
-1. **Persistent Browser Session:** Instead of repeatedly launching and killing Chrome every 60s, FRIDAY maintains an active session across cycles, recycling cleanly every 50 cycles to prevent memory accumulation.
-2. **Ultra-Lean Resource Blocking:** Blocks all images, video streams, audio, web fonts, background sync, and tracker networks. Reduces page weight by **85%+** and DOM load times to under ~1 second.
-3. **Memory Unloading (`about:blank`):** While idle between check cycles, the browser automatically unloads the page to `about:blank`, dropping Chrome's idle memory footprint to ~30MB.
-4. **Windows Eco Mode (`ECO_PRIORITY=true`):** Runs the Python and browser processes under `BELOW_NORMAL_PRIORITY_CLASS` using native Windows API, ensuring zero micro-stutters for everyday PC use.
-5. **Adaptive Night Polling (`ADAPTIVE_POLLING=true`):** Optionally relaxes check intervals automatically during late night hours (00:00 - 07:00).
-6. **Zero Zombie Processes:** `atexit` and `SIGINT`/`SIGTERM` handlers guarantee that terminating the monitor instantly kills any child headless Chrome and ChromeDriver processes.
+1. **⚡ Primary Engine (`curl_cffi`):**
+   - Directly negotiates TLS fingerprint impersonation (`impersonate="chrome124"`), bypassing Cloudflare and Akamai bot defenses at the socket level.
+   - Extracts BookMyShow's server-rendered `window.__INITIAL_STATE__` JSON directly in **~200ms**.
+   - **Zero browser processes:** Chrome is never launched, keeping RAM usage at an ultra-light **~25MB** with **0% CPU** consumption.
+
+2. **🛡️ On-Demand Fallback (Headless Chrome):**
+   - If BookMyShow ever presents a complex client-side JavaScript challenge or CAPTCHA, FRIDAY automatically engages headless Chrome on-demand.
+   - Chrome runs with image and video blocking enabled, and cleanly unloads to `about:blank` when idle.
+
+3. **🌱 Windows Eco Priority (`ECO_PRIORITY=true`):**
+   - Sets process priority to `BELOW_NORMAL_PRIORITY_CLASS` so you never experience stutters during PC work or gaming.
+
+4. **🌙 Adaptive Polling (`ADAPTIVE_POLLING=true`):**
+   - Automatically relaxes check frequency during off-peak night hours (00:00 - 07:00).
+
+---
+
+## 📁 Project Structure
+
+```text
+FRIDAY-Booking Alert System/
+│
+├── src/                          # Core application logic
+│   ├── checker.py                # Dual-engine checker (curl_cffi + Selenium fallback)
+│   ├── config.py                 # Configuration loader & TargetItem models
+│   ├── monitor.py                # Main monitoring loop & PC eco background worker
+│   ├── notifier.py               # Multi-channel alert dispatchers
+│   └── __init__.py
+│
+├── tests/                        # Tests & diagnostic tools
+│   ├── test_alerts.py            # Notification dispatcher test script
+│   └── scratch_test.py           # DOM inspector scratch utility
+│
+├── logs/                         # Output logs & opened booking history
+│   ├── monitor.log               # Background execution log
+│   └── booking_opened.txt        # History of detected open bookings
+│
+├── run.py                        # Primary root entrypoint
+├── monitor.py                    # Backward-compatible CLI entrypoint
+├── start_monitor.bat             # 1-click batch launcher for Windows
+├── targets.txt                   # User monitoring targets (Movie & Cinema URLs)
+├── .env                          # User configuration & notification credentials
+├── .env.example                  # Environment settings template
+├── requirements.txt              # Project dependencies
+└── README.md                     # Documentation
+```
 
 ---
 
@@ -69,7 +111,7 @@ FRIDAY has been specifically engineered to run in the background on your persona
 ```powershell
 python monitor.py
 ```
-*(Or double-click [start_monitor.bat](file:///c:/Users/alang/OneDrive/Desktop/FRIDAY-Booking%20Alert%20System/start_monitor.bat))*
+*(Or double-click [start_monitor.bat](start_monitor.bat))*
 
 ### One-off Single Check
 ```powershell
