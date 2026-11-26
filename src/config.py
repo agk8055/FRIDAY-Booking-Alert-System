@@ -24,6 +24,8 @@ class TheatreTarget:
     code: str = ""
     slug: str = ""
     name: str = ""
+    date: str = ""
+    city_segment: str = ""
 
     def __post_init__(self):
         cleaned = self.raw_input.strip()
@@ -32,9 +34,17 @@ class TheatreTarget:
             path = urllib.parse.urlparse(cleaned).path.strip("/")
             parts = [p for p in path.split("/") if p]
 
-            # 1. Strip trailing 8-digit date if present (e.g. 20261121)
+            # 0. Extract city segment if present (/cinemas/<city>/...)
+            for marker in ("cinemas", "cinema"):
+                if marker in parts:
+                    c_idx = parts.index(marker)
+                    if len(parts) > c_idx + 1:
+                        self.city_segment = parts[c_idx + 1]
+                    break
+
+            # 1. Extract & strip trailing 8-digit date if present (e.g. 20261127)
             if parts and re.fullmatch(r"\d{8}", parts[-1]):
-                parts.pop()
+                self.date = parts.pop()
 
             # 2. Check if 'buytickets' is in URL path
             if "buytickets" in parts:
@@ -73,6 +83,24 @@ class TheatreTarget:
             self.code = cleaned.upper()
             self.slug = cleaned.lower().replace(" ", "-")
 
+    def build_dated_url(self, target_date: str) -> str:
+        """Builds a dated buytickets cinema URL if this target has a base URL without a date."""
+        if not self.url or not target_date or self.date or not re.fullmatch(r"\d{8}", target_date):
+            return self.url
+
+        parsed = urllib.parse.urlparse(self.url)
+        parts = [p for p in parsed.path.strip("/").split("/") if p]
+        base = f"{parsed.scheme}://{parsed.netloc}"
+
+        if "buytickets" in parts:
+            self.url = f"{base}/{'/'.join(parts)}/{target_date}"
+            self.date = target_date
+        elif self.city_segment and self.slug and self.code:
+            self.url = f"{base}/cinemas/{self.city_segment}/{self.slug}/buytickets/{self.code}/{target_date}"
+            self.date = target_date
+
+        return self.url
+
 
 def parse_theatres(theatres_str: str) -> List[TheatreTarget]:
     if not theatres_str:
@@ -93,6 +121,7 @@ class TargetItem:
     event_code: str = ""
     target_theatres: List[TheatreTarget] = field(default_factory=list)
     is_cinema: bool = False
+    target_date: str = ""
 
     def __post_init__(self):
         # Auto-detect properties from BookMyShow URL
@@ -119,6 +148,15 @@ class TargetItem:
                 self.event_code = parts[idx + 3]
             self.is_cinema = True
 
+        if self.target_date:
+            for th in self.target_theatres:
+                if th.url and not th.date:
+                    th.build_dated_url(self.target_date)
+
+    @property
+    def has_theatre_urls(self) -> bool:
+        return any(bool(th.url) for th in self.target_theatres)
+
     @property
     def theatres_display(self) -> str:
         if not self.target_theatres:
@@ -126,7 +164,8 @@ class TargetItem:
         names = []
         for th in self.target_theatres:
             if th.code and th.code != th.name:
-                names.append(f"{th.name} ({th.code})")
+                date_suffix = f", {th.date}" if th.date else ""
+                names.append(f"{th.name} ({th.code}{date_suffix})")
             else:
                 names.append(th.name)
         return ", ".join(names)
@@ -145,17 +184,32 @@ def load_targets_from_file_or_env() -> List[TargetItem]:
                     line = line.strip()
                     if not line or line.startswith("#"):
                         continue
-                    
+
+                    target_date = ""
+                    date_match = re.search(r"@(\d{8})\b", line)
+                    if date_match:
+                        target_date = date_match.group(1)
+                        line = re.sub(r"\s*@\d{8}\b", "", line).strip()
+
                     theatres = []
                     url_part = line
-                    # Format: <Movie URL> | <Theatre URL 1>, <Theatre URL 2>
+                    # Format: <Movie URL> | <Theatre URL 1>, <Theatre URL 2> [@YYYYMMDD]
                     if "|" in line:
-                        url_part, th_part = line.split("|", 1)
-                        theatres = parse_theatres(th_part)
+                        parts = [p.strip() for p in line.split("|") if p.strip()]
+                        if parts:
+                            url_part = parts[0]
+                            if len(parts) > 1:
+                                theatres = parse_theatres(",".join(parts[1:]))
                     
                     url_clean = url_part.strip()
                     if url_clean.startswith("http"):
-                        targets.append(TargetItem(url=url_clean, target_theatres=theatres))
+                        targets.append(
+                            TargetItem(
+                                url=url_clean,
+                                target_theatres=theatres,
+                                target_date=target_date,
+                            )
+                        )
         except Exception as e:
             print(f"Notice: Failed to read {targets_file}: {e}")
 

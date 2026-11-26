@@ -102,7 +102,183 @@ class BMSChecker:
         except Exception:
             return None
 
+    def _derive_movie_name(self, target: TargetItem) -> str:
+        return target.slug.replace("-", " ").title() if target.slug else (target.event_code or "Target Movie")
+
+    def _is_redirected_away_from_date(self, final_url: str, target_date: str) -> bool:
+        """Returns True if BookMyShow redirected a dated cinema URL to a different date."""
+        if not target_date or not final_url:
+            return False
+        m = re.search(r"/(\d{8})(?:[/?#]|$)", final_url)
+        if m and m.group(1) != target_date:
+            return True
+        return False
+
+    def _match_movie_in_state(
+        self, state: dict, target: TargetItem, fallback_name: str, target_date: str = ""
+    ) -> Optional[str]:
+        """Searches venue showtime sections of window.__INITIAL_STATE__ for the target movie."""
+        if not state or not isinstance(state, (dict, list)):
+            return None
+
+        # Prefer authoritative venue showtime stores; never scan seo/footer/header/sidebar
+        ignored_top_keys = {"seo", "headerApi", "sidebarApi", "regions", "cookies", "config", "appConfig", "appPromotionReducer", "youtube"}
+        search_roots = []
+        if isinstance(state, dict) and ("venueShowtimesFunctionalApi" in state or "venueShowtimesNew" in state):
+            vfa = state.get("venueShowtimesFunctionalApi", {})
+            queries = vfa.get("queries", {}) if isinstance(vfa, dict) else {}
+            for qk, qv in queries.items():
+                if target_date and isinstance(qv, dict):
+                    arg_date = qv.get("originalArgs", {}).get("dateCode", "")
+                    if arg_date and arg_date != target_date:
+                        continue
+                search_roots.append(qv)
+            if not search_roots and "venueShowtimesNew" in state:
+                search_roots.append(state["venueShowtimesNew"])
+        elif isinstance(state, dict):
+            search_roots = [v for k, v in state.items() if k not in ignored_top_keys]
+        else:
+            search_roots = [state]
+
+        ev_code_lower = target.event_code.lower() if target.event_code else ""
+        slug_lower = target.slug.lower() if target.slug else ""
+        stack = list(search_roots)
+
+        while stack:
+            node = stack.pop()
+            if isinstance(node, dict):
+                # Check if a dict key itself is the event code (e.g. showtimesByEvent["ET00491771"])
+                if ev_code_lower:
+                    for k, v in node.items():
+                        if isinstance(k, str) and k.lower() == ev_code_lower:
+                            if isinstance(v, dict):
+                                return v.get("eventName") or v.get("EventTitle") or v.get("EventName") or fallback_name
+                            return fallback_name
+
+                node_code = node.get("eventCode") or node.get("EventCode") or ""
+                if ev_code_lower and isinstance(node_code, str) and node_code.lower() == ev_code_lower:
+                    return node.get("eventName") or node.get("EventTitle") or node.get("EventName") or fallback_name
+
+                node_slug = node.get("slug") or node.get("eventSlug") or node.get("EventURL") or ""
+                if slug_lower and isinstance(node_slug, str) and slug_lower in node_slug.lower():
+                    return node.get("eventName") or node.get("EventTitle") or node.get("EventName") or fallback_name
+
+                for v in node.values():
+                    if isinstance(v, (dict, list)):
+                        stack.append(v)
+            elif isinstance(node, list):
+                for item in node:
+                    if isinstance(item, (dict, list)):
+                        stack.append(item)
+        return None
+
+    def _match_movie_in_cinema_page(
+        self, html: str, state: dict, target: TargetItem, fallback_name: str, target_date: str = ""
+    ) -> Optional[str]:
+        """Matches the target movie in a cinema page using venue showtime JSON and non-footer HTML links."""
+        matched_name = self._match_movie_in_state(state, target, fallback_name, target_date=target_date)
+        if matched_name:
+            return matched_name
+
+        # If authoritative venue showtimes API data is present, don't fall back to page-wide <a> scraping
+        if isinstance(state, dict) and "venueShowtimesFunctionalApi" in state:
+            return None
+
+        soup_cin = BeautifulSoup(html, "html.parser")
+        for chrome_tag in soup_cin.find_all(["header", "footer", "nav"]):
+            chrome_tag.decompose()
+
+        ev_code_lower = target.event_code.lower() if target.event_code else ""
+        slug_lower = target.slug.lower() if target.slug else ""
+        name_lower = fallback_name.lower() if fallback_name else ""
+
+        for a in soup_cin.find_all("a", href=True):
+            href_l = a["href"].lower()
+            txt = a.text.strip()
+            txt_l = txt.lower()
+            if (ev_code_lower and ev_code_lower in href_l) or \
+               (slug_lower and slug_lower in href_l) or \
+               (name_lower and len(name_lower) >= 3 and name_lower in txt_l):
+                return txt or fallback_name
+
+        return None
+
+    def _check_target_theatres_curl(self, target: TargetItem, session) -> Optional[CheckResult]:
+        """Checks target theatre URLs directly via curl_cffi, bypassing the movie page gate."""
+        headers = {
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://in.bookmyshow.com/",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        }
+        fallback_name = self._derive_movie_name(target)
+        matched_theatres = []
+        matched_url = ""
+        matched_movie_name = fallback_name
+        first_theatre_url = next((th.url for th in target.target_theatres if th.url), target.url)
+
+        for th_target in target.target_theatres:
+            if not th_target.url:
+                continue
+            resp = session.get(th_target.url, headers=headers, timeout=10)
+            if resp.status_code != 200:
+                logger.debug(f"curl_cffi returned HTTP {resp.status_code} for theatre URL {th_target.url}")
+                return None
+
+            final_url = str(getattr(resp, "url", "") or th_target.url)
+            if self._is_redirected_away_from_date(final_url, th_target.date):
+                logger.debug(f"Theatre URL {th_target.url} redirected to {final_url} (date {th_target.date} not listed yet)")
+                continue
+
+            state = self._extract_initial_state_from_html(resp.text)
+            found_name = self._match_movie_in_cinema_page(
+                resp.text, state, target, fallback_name, target_date=th_target.date
+            )
+            if found_name:
+                matched_movie_name = found_name
+                label_name = f"{th_target.name} [{th_target.code}]"
+                if label_name not in matched_theatres:
+                    matched_theatres.append(label_name)
+                if not matched_url:
+                    matched_url = th_target.url
+
+        if matched_theatres:
+            return CheckResult(
+                is_open=True,
+                movie_name=matched_movie_name,
+                city=target.city,
+                status_text=f"🎟️ BOOKINGS OPEN in {target.city} at target theatre: {', '.join(matched_theatres)}! [⚡ curl_cffi]",
+                booking_url=matched_url,
+                theatres_found=matched_theatres,
+                matched_theatres=matched_theatres,
+                details={
+                    "movie_name": matched_movie_name,
+                    "city": target.city,
+                    "matched_theatres": matched_theatres,
+                    "booking_url": matched_url,
+                    "engine": "curl_cffi"
+                }
+            )
+
+        return CheckResult(
+            is_open=False,
+            movie_name=fallback_name,
+            city=target.city,
+            status_text=f"Waiting for {fallback_name} at {target.theatres_display} [⚡ curl_cffi]",
+            booking_url=first_theatre_url,
+            theatres_found=[],
+            matched_theatres=[],
+            details={
+                "target_theatres": target.theatres_display,
+                "city": target.city,
+                "engine": "curl_cffi"
+            }
+        )
+
     def _check_movie_page_curl(self, target: TargetItem, session) -> Optional[CheckResult]:
+        if target.has_theatre_urls:
+            return self._check_target_theatres_curl(target, session)
+
         headers = {
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9",
@@ -401,7 +577,77 @@ class BMSChecker:
             details={"listed_movies": listed_movies}
         )
 
+    def _check_target_theatres_selenium(self, target: TargetItem, driver: webdriver.Chrome) -> CheckResult:
+        """Checks target theatre URLs directly via headless Chrome, bypassing the movie page gate."""
+        fallback_name = self._derive_movie_name(target)
+        matched_theatres = []
+        matched_url = ""
+        matched_movie_name = fallback_name
+        first_theatre_url = next((th.url for th in target.target_theatres if th.url), target.url)
+
+        for th_target in target.target_theatres:
+            if not th_target.url:
+                continue
+            try:
+                driver.get(th_target.url)
+                WebDriverWait(driver, 8).until(
+                    lambda d: d.execute_script("return document.readyState;") in ["interactive", "complete"]
+                )
+                if self._is_redirected_away_from_date(driver.current_url, th_target.date):
+                    logger.debug(
+                        f"Theatre URL {th_target.url} redirected to {driver.current_url} "
+                        f"(date {th_target.date} not listed yet)"
+                    )
+                    continue
+                state = driver.execute_script("return window.__INITIAL_STATE__;") or {}
+                found_name = self._match_movie_in_cinema_page(
+                    driver.page_source, state, target, fallback_name, target_date=th_target.date
+                )
+                if found_name:
+                    matched_movie_name = found_name
+                    label_name = f"{th_target.name} [{th_target.code}]"
+                    if label_name not in matched_theatres:
+                        matched_theatres.append(label_name)
+                    if not matched_url:
+                        matched_url = th_target.url
+            except Exception as e:
+                logger.warning(f"Error checking direct cinema URL {th_target.url}: {e}")
+
+        if matched_theatres:
+            return CheckResult(
+                is_open=True,
+                movie_name=matched_movie_name,
+                city=target.city,
+                status_text=f"🎟️ BOOKINGS OPEN in {target.city} at target theatre: {', '.join(matched_theatres)}!",
+                booking_url=matched_url,
+                theatres_found=matched_theatres,
+                matched_theatres=matched_theatres,
+                details={
+                    "movie_name": matched_movie_name,
+                    "city": target.city,
+                    "matched_theatres": matched_theatres,
+                    "booking_url": matched_url
+                }
+            )
+
+        return CheckResult(
+            is_open=False,
+            movie_name=fallback_name,
+            city=target.city,
+            status_text=f"Waiting for {fallback_name} at {target.theatres_display}",
+            booking_url=first_theatre_url,
+            theatres_found=[],
+            matched_theatres=[],
+            details={
+                "target_theatres": target.theatres_display,
+                "city": target.city
+            }
+        )
+
     def _check_movie_page(self, target: TargetItem, driver: webdriver.Chrome) -> CheckResult:
+        if target.has_theatre_urls:
+            return self._check_target_theatres_selenium(target, driver)
+
         driver.get(target.url)
 
         try:

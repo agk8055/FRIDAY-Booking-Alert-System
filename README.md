@@ -21,8 +21,11 @@ https://in.bookmyshow.com/movies/bengaluru/avengers-doomsday/ET00439706
 # Movie + Specific Theatre Focus (add pipe '|' followed by theatre names or cinema URLs)
 https://in.bookmyshow.com/movies/coimbatore/dune-part-three/ET00491771 | Broadway Cinemas, Brookefields
 
-# Movie + Direct Cinema URL(s)
-https://in.bookmyshow.com/movies/coimbatore/dune-part-three/ET00491771 | https://in.bookmyshow.com/cinemas/coimbatore/broadway-cinemas-coimbatore/BWCB
+# Movie + Dated Cinema Buytickets URL (checks the theatre's dated page directly first)
+https://in.bookmyshow.com/movies/kochi/avengers-doomsday/ET00439706 | https://in.bookmyshow.com/cinemas/KOCH/vanitha-cineplex-rgb-laser-4k-3d-atmos-edappally/buytickets/VMHE/20261127
+
+# Movie + Base Cinema URL(s) + Optional @YYYYMMDD Date Parameter
+https://in.bookmyshow.com/movies/coimbatore/dune-part-three/ET00491771 | https://in.bookmyshow.com/cinemas/coimbatore/broadway-cinemas-coimbatore/BWCB | @20261127
 
 # Direct Cinema Schedule URL
 https://in.bookmyshow.com/cinemas/coimbatore/broadway-cinemas-coimbatore/BWCB

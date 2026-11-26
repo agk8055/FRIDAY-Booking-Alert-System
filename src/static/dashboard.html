@@ -1,0 +1,883 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FRIDAY — Booking Alert Dashboard</title>
+  <style>
+    :root {
+      --bg: #000000;
+      --surface: #090909;
+      --surface-2: #111111;
+      --surface-3: #181818;
+      --border: #222222;
+      --border-red: rgba(239, 68, 68, 0.38);
+      --text: #ffffff;
+      --text-soft: #d4d4d8;
+      --muted: #8a8a93;
+      --red: #ef4444;
+      --red-bright: #ff1f3a;
+      --red-dark: #991b1b;
+      --red-glow: rgba(239, 68, 68, 0.22);
+      --radius: 12px;
+      --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      --mono: "Cascadia Code", "Fira Code", Consolas, monospace;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: var(--font);
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+      min-height: 100vh;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .container {
+      max-width: 1240px;
+      margin: 0 auto;
+      padding: 28px 22px 64px;
+    }
+
+    /* Header */
+    header {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      padding-bottom: 22px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 22px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+    }
+    .brand-banner {
+      height: 58px;
+      width: auto;
+      max-width: 100%;
+      object-fit: contain;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      display: block;
+    }
+
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 14px;
+      border-radius: 999px;
+      font-size: 0.8rem;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      color: #ffffff;
+    }
+    .status-pill.live {
+      border-color: var(--border-red);
+      box-shadow: 0 0 18px rgba(239, 68, 68, 0.14);
+    }
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #52525b;
+    }
+    .dot.running {
+      background: var(--red-bright);
+      box-shadow: 0 0 0 4px rgba(255, 31, 58, 0.25);
+      animation: pulse 1.6s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.55; transform: scale(0.92); }
+    }
+
+    /* Buttons */
+    button {
+      font-family: inherit;
+      font-size: 0.84rem;
+      font-weight: 600;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 14px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      background: var(--surface-2);
+      color: #ffffff;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    button:hover {
+      border-color: #3f3f46;
+      background: var(--surface-3);
+    }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    button.primary {
+      background: var(--red);
+      border-color: var(--red);
+      color: #ffffff;
+      box-shadow: 0 0 16px rgba(239, 68, 68, 0.22);
+    }
+    button.primary:hover {
+      background: var(--red-bright);
+      border-color: var(--red-bright);
+    }
+    button.outline-red {
+      background: rgba(239, 68, 68, 0.08);
+      border-color: var(--border-red);
+      color: #ffffff;
+    }
+    button.outline-red:hover {
+      background: rgba(239, 68, 68, 0.18);
+      border-color: var(--red);
+    }
+    button.white-btn {
+      background: #ffffff;
+      border-color: #ffffff;
+      color: #000000;
+    }
+    button.white-btn:hover {
+      background: #e4e4e7;
+      border-color: #e4e4e7;
+    }
+    button.sm { padding: 5px 11px; font-size: 0.77rem; }
+
+    /* Info Strip */
+    .info-strip {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 12px 18px;
+      margin-bottom: 24px;
+      font-size: 0.82rem;
+      color: var(--text-soft);
+    }
+    .info-strip strong { color: #ffffff; }
+    .channel-tags { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+    .tag {
+      padding: 3px 10px;
+      border-radius: 6px;
+      font-size: 0.74rem;
+      font-weight: 600;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      color: #666670;
+    }
+    .tag.on {
+      color: #ffffff;
+      border-color: var(--border-red);
+      background: rgba(239, 68, 68, 0.12);
+    }
+
+    /* Main Grid */
+    .grid {
+      display: grid;
+      grid-template-columns: 1.15fr 0.85fr;
+      gap: 22px;
+      align-items: start;
+    }
+    @media (max-width: 960px) {
+      .grid { grid-template-columns: 1fr; }
+    }
+
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+    .panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 15px 18px;
+      border-bottom: 1px solid var(--border);
+      background: #050505;
+    }
+    .panel-header h2 {
+      font-size: 0.98rem;
+      font-weight: 700;
+      color: #ffffff;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .count-chip {
+      font-size: 0.74rem;
+      font-weight: 700;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: rgba(239, 68, 68, 0.15);
+      border: 1px solid var(--border-red);
+      color: #ffffff;
+    }
+    .panel-body { padding: 18px; }
+
+    /* Target Cards */
+    .target-list { display: flex; flex-direction: column; gap: 12px; }
+    .target-card {
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--red);
+      border-radius: 10px;
+      padding: 15px 16px;
+      transition: border-color 0.15s ease, transform 0.15s ease, opacity 0.15s ease;
+    }
+    .target-card.disabled {
+      opacity: 0.45;
+      border-left-color: #3f3f46;
+    }
+    .target-card:hover {
+      border-color: #333338;
+      border-left-color: var(--red-bright);
+    }
+    .target-card.disabled:hover {
+      border-left-color: #52525b;
+    }
+
+    .target-top {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 8px;
+    }
+    .target-title {
+      font-size: 1rem;
+      font-weight: 700;
+      color: #ffffff;
+    }
+    .badges {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 7px;
+    }
+    .badge {
+      font-size: 0.72rem;
+      font-weight: 700;
+      padding: 2px 9px;
+      border-radius: 5px;
+      background: #18181b;
+      color: #ffffff;
+      border: 1px solid #2e2e34;
+    }
+    .badge.date {
+      background: rgba(239, 68, 68, 0.14);
+      color: #ffffff;
+      border-color: var(--border-red);
+    }
+    .badge.code {
+      background: #ffffff;
+      color: #000000;
+      border-color: #ffffff;
+      font-family: var(--mono);
+    }
+
+    .target-theatres {
+      font-size: 0.82rem;
+      color: var(--text-soft);
+      margin-top: 10px;
+    }
+    .target-url {
+      display: block;
+      font-size: 0.75rem;
+      font-family: var(--mono);
+      color: var(--muted);
+      margin-top: 6px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      text-decoration: none;
+    }
+    .target-url:hover { color: var(--red); text-decoration: underline; }
+
+    .target-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+
+    /* Toggle Switch */
+    .switch {
+      position: relative;
+      display: inline-block;
+      width: 40px;
+      height: 22px;
+    }
+    .switch input { opacity: 0; width: 0; height: 0; }
+    .slider {
+      position: absolute;
+      cursor: pointer;
+      inset: 0;
+      background: #27272a;
+      border-radius: 999px;
+      transition: 0.2s;
+    }
+    .slider:before {
+      content: "";
+      position: absolute;
+      height: 16px;
+      width: 16px;
+      left: 3px;
+      bottom: 3px;
+      background: #ffffff;
+      border-radius: 50%;
+      transition: 0.2s;
+    }
+    input:checked + .slider {
+      background: var(--red);
+      box-shadow: 0 0 10px var(--red-glow);
+    }
+    input:checked + .slider:before { transform: translateX(18px); }
+
+    /* Form / Modal */
+    .form-box {
+      background: var(--surface-2);
+      border: 1px solid var(--border-red);
+      border-radius: 10px;
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+    .form-box.hidden { display: none; }
+    .form-group { margin-bottom: 12px; }
+    .form-group label {
+      display: block;
+      font-size: 0.78rem;
+      font-weight: 600;
+      color: var(--text-soft);
+      margin-bottom: 5px;
+    }
+    input[type="text"], input[type="url"], input[type="date"], textarea {
+      width: 100%;
+      background: #000000;
+      border: 1px solid #2a2a30;
+      border-radius: 8px;
+      padding: 9px 12px;
+      color: #ffffff;
+      font-family: inherit;
+      font-size: 0.85rem;
+    }
+    input[type="date"]::-webkit-calendar-picker-indicator {
+      filter: invert(1);
+    }
+    input:focus, textarea:focus {
+      outline: none;
+      border-color: var(--red);
+      box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.18);
+    }
+    textarea.raw-editor {
+      font-family: var(--mono);
+      font-size: 0.8rem;
+      min-height: 220px;
+      resize: vertical;
+    }
+    .form-row {
+      display: grid;
+      grid-template-columns: 1fr 180px;
+      gap: 12px;
+    }
+    @media (max-width: 600px) { .form-row { grid-template-columns: 1fr; } }
+
+    .preview-box {
+      font-size: 0.8rem;
+      padding: 10px 12px;
+      border-radius: 8px;
+      background: #050505;
+      border: 1px solid var(--border);
+      margin-bottom: 12px;
+      color: var(--text-soft);
+    }
+    .preview-box strong { color: #ffffff; }
+    .preview-box code { color: var(--red); font-family: var(--mono); }
+
+    /* Logs */
+    .tabs { display: flex; gap: 6px; }
+    .tab-btn.active {
+      background: var(--red);
+      border-color: var(--red);
+      color: #ffffff;
+    }
+    .log-view {
+      background: #000000;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 13px;
+      font-family: var(--mono);
+      font-size: 0.76rem;
+      line-height: 1.58;
+      color: #e4e4e7;
+      height: 460px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .empty-state {
+      text-align: center;
+      padding: 36px 16px;
+      color: var(--muted);
+      font-size: 0.88rem;
+      border: 1px dashed var(--border);
+      border-radius: 10px;
+    }
+    .toast {
+      position: fixed;
+      bottom: 22px;
+      right: 22px;
+      background: #0a0a0a;
+      color: #ffffff;
+      border: 1px solid var(--border);
+      border-left: 4px solid #ffffff;
+      padding: 11px 16px;
+      border-radius: 8px;
+      font-size: 0.84rem;
+      font-weight: 600;
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.75);
+      opacity: 0;
+      transform: translateY(10px);
+      transition: all 0.2s ease;
+      pointer-events: none;
+      z-index: 99;
+    }
+    .toast.show { opacity: 1; transform: translateY(0); }
+    .toast.error { border-left-color: var(--red); }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="brand">
+        <img src="/assets/banner.png" alt="FRIDAY Booking Alert System" class="brand-banner" />
+      </div>
+
+      <div class="controls">
+        <div class="status-pill" id="statusPill">
+          <span class="dot" id="statusDot"></span>
+          <span id="statusText">Checking...</span>
+        </div>
+        <button class="primary" id="btnStart" onclick="startMonitor()">▶ Start Monitor</button>
+        <button class="outline-red" id="btnStop" onclick="stopMonitor()" style="display:none;">■ Pause Monitor</button>
+        <button id="btnOnce" onclick="checkOnce()">⚡ Check Once</button>
+        <button id="btnTestAlert" onclick="testAlert()">🔔 Test Alert</button>
+      </div>
+    </header>
+
+    <div class="info-strip">
+      <div>
+        <strong>Interval:</strong> <span id="intervalLabel">—</span>s
+        &nbsp;|&nbsp;
+        <strong>Eco Mode:</strong> <span id="ecoLabel">—</span>
+        &nbsp;|&nbsp;
+        <strong>Night Adaptive:</strong> <span id="adaptiveLabel">—</span>
+      </div>
+      <div class="channel-tags" id="channelTags"></div>
+    </div>
+
+    <div class="grid">
+      <!-- Targets Panel -->
+      <section class="panel">
+        <div class="panel-header">
+          <h2>🎯 Targets <span class="count-chip" id="targetCount">0</span></h2>
+          <div style="display:flex; gap:8px;">
+            <button class="sm" id="btnToggleRaw" onclick="toggleRawEditor()">📝 Raw targets.txt</button>
+            <button class="sm white-btn" onclick="openAddForm()">+ Add Target</button>
+          </div>
+        </div>
+        <div class="panel-body">
+          <!-- Add / Edit Form -->
+          <div class="form-box hidden" id="targetForm">
+            <h3 id="formTitle" style="font-size:0.95rem; margin-bottom:12px; color:#fff;">Add New Target</h3>
+            <div class="form-group">
+              <label for="inputUrl">BookMyShow Movie or Cinema URL *</label>
+              <input type="url" id="inputUrl" placeholder="https://in.bookmyshow.com/movies/kochi/avengers-doomsday/ET00439706" oninput="schedulePreview()" />
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label for="inputTheatres">Specific Theatre(s) (optional, comma-separated Cinema URLs or names)</label>
+                <input type="text" id="inputTheatres" placeholder="https://in.bookmyshow.com/cinemas/.../VMHE" oninput="schedulePreview()" />
+              </div>
+              <div class="form-group">
+                <label for="inputDate">Target Date (optional)</label>
+                <input type="date" id="inputDate" oninput="schedulePreview()" />
+              </div>
+            </div>
+            <div class="preview-box" id="previewBox">Paste a BookMyShow URL above to preview auto-detected movie, city, and theatres.</div>
+            <div style="display:flex; gap:8px; justify-content:flex-end;">
+              <button class="sm" onclick="closeForm()">Cancel</button>
+              <button class="sm primary" onclick="saveTargetForm()">Save Target</button>
+            </div>
+          </div>
+
+          <!-- Raw targets.txt Editor -->
+          <div class="form-box hidden" id="rawEditorBox">
+            <label style="display:block; font-size:0.8rem; color:var(--text-soft); margin-bottom:6px;">
+              Direct <code>targets.txt</code> editor (lines starting with <code>#</code> are ignored):
+            </label>
+            <textarea class="raw-editor" id="rawTextarea"></textarea>
+            <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:10px;">
+              <button class="sm" onclick="toggleRawEditor()">Close</button>
+              <button class="sm primary" onclick="saveRawTargets()">Save targets.txt</button>
+            </div>
+          </div>
+
+          <!-- Target Cards -->
+          <div class="target-list" id="targetList"></div>
+        </div>
+      </section>
+
+      <!-- Logs Panel -->
+      <section class="panel">
+        <div class="panel-header">
+          <div class="tabs">
+            <button class="sm tab-btn active" id="tabMonitorLog" onclick="switchLogTab('monitor')">📜 Monitor Log</button>
+            <button class="sm tab-btn" id="tabBookingsLog" onclick="switchLogTab('bookings')">🎉 Opened Bookings</button>
+          </div>
+          <div style="display:flex; gap:8px; align-items:center;">
+            <label style="font-size:0.76rem; color:var(--muted); display:flex; align-items:center; gap:5px; cursor:pointer;">
+              <input type="checkbox" id="autoScroll" checked /> Auto-scroll
+            </label>
+            <button class="sm" onclick="clearMonitorLog()">Clear</button>
+          </div>
+        </div>
+        <div class="panel-body">
+          <div class="log-view" id="logView">Loading logs...</div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script>
+    let targets = [];
+    let rawContent = "";
+    let editingIndex = -1;
+    let activeLogTab = "monitor";
+    let logsData = { monitor_log: "", bookings_log: "" };
+    let previewTimer = null;
+
+    function showToast(msg, isError = false) {
+      const el = document.getElementById("toast");
+      el.textContent = msg;
+      el.className = "toast show" + (isError ? " error" : "");
+      setTimeout(() => { el.className = "toast"; }, 3000);
+    }
+
+    function escapeHtml(str) {
+      return (str || "").replace(/[&<>"']/g, c => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+      }[c]));
+    }
+
+    function formatDisplayDate(yyyymmdd) {
+      if (!yyyymmdd || yyyymmdd.length !== 8) return yyyymmdd;
+      return `${yyyymmdd.slice(0, 4)}-${yyyymmdd.slice(4, 6)}-${yyyymmdd.slice(6, 8)}`;
+    }
+
+    async function api(path, method = "GET", body = null) {
+      const opts = { method, headers: {} };
+      if (body !== null) {
+        opts.headers["Content-Type"] = "application/json";
+        opts.body = JSON.stringify(body);
+      }
+      const res = await fetch(path, opts);
+      return await res.json();
+    }
+
+    async function loadTargets() {
+      const data = await api("/api/targets");
+      targets = data.targets || [];
+      rawContent = data.raw || "";
+      document.getElementById("rawTextarea").value = rawContent;
+      renderTargets();
+    }
+
+    function renderTargets() {
+      const list = document.getElementById("targetList");
+      const activeCount = targets.filter(t => t.enabled).length;
+      document.getElementById("targetCount").textContent = `${activeCount} / ${targets.length}`;
+
+      if (!targets.length) {
+        list.innerHTML = `<div class="empty-state">No targets configured yet. Click <strong>+ Add Target</strong> to add your first BookMyShow movie or cinema URL.</div>`;
+        return;
+      }
+
+      list.innerHTML = targets.map((t, i) => `
+        <div class="target-card ${t.enabled ? "" : "disabled"}">
+          <div class="target-top">
+            <div>
+              <div class="target-title">${escapeHtml(t.title)}</div>
+              <div class="badges">
+                ${t.city ? `<span class="badge">📍 ${escapeHtml(t.city)}</span>` : ""}
+                ${t.event_code ? `<span class="badge code">${escapeHtml(t.event_code)}</span>` : ""}
+                ${t.target_date ? `<span class="badge date">📅 ${escapeHtml(formatDisplayDate(t.target_date))}</span>` : ""}
+              </div>
+            </div>
+            <div class="target-actions">
+              <label class="switch" title="${t.enabled ? "Disable target" : "Enable target"}">
+                <input type="checkbox" ${t.enabled ? "checked" : ""} onchange="toggleTarget(${i}, this.checked)" />
+                <span class="slider"></span>
+              </label>
+              <button class="sm" onclick="openEditForm(${i})">Edit</button>
+              <button class="sm outline-red" onclick="deleteTarget(${i})">✕</button>
+            </div>
+          </div>
+          <div class="target-theatres">🏛️ ${escapeHtml(t.theatres_display || "ANY Theatre in City")}</div>
+          <a class="target-url" href="${escapeHtml(t.url)}" target="_blank" rel="noreferrer">${escapeHtml(t.url)}</a>
+        </div>
+      `).join("");
+    }
+
+    async function persistTargets(newTargets, msg) {
+      const res = await api("/api/targets", "POST", { targets: newTargets });
+      if (!res.ok) {
+        showToast(res.error || "Failed to save targets", true);
+        return false;
+      }
+      targets = res.targets || [];
+      rawContent = res.raw || "";
+      document.getElementById("rawTextarea").value = rawContent;
+      renderTargets();
+      if (msg) showToast(msg);
+      return true;
+    }
+
+    async function toggleTarget(index, enabled) {
+      const updated = targets.map((t, i) => i === index ? { ...t, enabled } : t);
+      await persistTargets(updated, enabled ? "Target enabled" : "Target paused");
+    }
+
+    async function deleteTarget(index) {
+      const updated = targets.filter((_, i) => i !== index);
+      await persistTargets(updated, "Target removed");
+    }
+
+    function openAddForm() {
+      editingIndex = -1;
+      document.getElementById("formTitle").textContent = "Add New Target";
+      document.getElementById("inputUrl").value = "";
+      document.getElementById("inputTheatres").value = "";
+      document.getElementById("inputDate").value = "";
+      document.getElementById("previewBox").textContent = "Paste a BookMyShow URL above to preview auto-detected movie, city, and theatres.";
+      document.getElementById("targetForm").classList.remove("hidden");
+      document.getElementById("rawEditorBox").classList.add("hidden");
+    }
+
+    function openEditForm(index) {
+      const t = targets[index];
+      editingIndex = index;
+      document.getElementById("formTitle").textContent = "Edit Target";
+      document.getElementById("inputUrl").value = t.url || "";
+      document.getElementById("inputTheatres").value = t.theatres_raw || "";
+      document.getElementById("inputDate").value = t.target_date ? formatDisplayDate(t.target_date) : "";
+      document.getElementById("targetForm").classList.remove("hidden");
+      document.getElementById("rawEditorBox").classList.add("hidden");
+      runPreview();
+    }
+
+    function closeForm() {
+      document.getElementById("targetForm").classList.add("hidden");
+      editingIndex = -1;
+    }
+
+    function schedulePreview() {
+      clearTimeout(previewTimer);
+      previewTimer = setTimeout(runPreview, 250);
+    }
+
+    async function runPreview() {
+      const url = document.getElementById("inputUrl").value.trim();
+      const theatres_raw = document.getElementById("inputTheatres").value.trim();
+      const dateVal = document.getElementById("inputDate").value.replace(/-/g, "");
+      const box = document.getElementById("previewBox");
+      if (!url) {
+        box.textContent = "Paste a BookMyShow URL above to preview auto-detected movie, city, and theatres.";
+        return;
+      }
+      const res = await api("/api/targets/parse", "POST", { url, theatres_raw, target_date: dateVal });
+      if (!res.ok) {
+        box.textContent = res.error;
+        return;
+      }
+      const p = res.target;
+      box.innerHTML = `<strong>${escapeHtml(p.title)}</strong>` +
+        (p.city ? ` • 📍 ${escapeHtml(p.city)}` : "") +
+        (p.event_code ? ` • <code>${escapeHtml(p.event_code)}</code>` : "") +
+        (p.target_date ? ` • 📅 ${escapeHtml(formatDisplayDate(p.target_date))}` : "") +
+        `<br/>🏛️ ${escapeHtml(p.theatres_display)}`;
+    }
+
+    async function saveTargetForm() {
+      const url = document.getElementById("inputUrl").value.trim();
+      const theatres_raw = document.getElementById("inputTheatres").value.trim();
+      const target_date = document.getElementById("inputDate").value.replace(/-/g, "");
+
+      if (!url.startsWith("http")) {
+        showToast("Please enter a valid BookMyShow URL starting with http/https.", true);
+        return;
+      }
+
+      const item = {
+        enabled: editingIndex >= 0 ? targets[editingIndex].enabled : true,
+        url,
+        theatres_raw,
+        target_date,
+      };
+
+      const updated = editingIndex >= 0
+        ? targets.map((t, i) => i === editingIndex ? item : t)
+        : [...targets, item];
+
+      if (await persistTargets(updated, editingIndex >= 0 ? "Target updated" : "Target added")) {
+        closeForm();
+      }
+    }
+
+    function toggleRawEditor() {
+      const box = document.getElementById("rawEditorBox");
+      box.classList.toggle("hidden");
+      document.getElementById("targetForm").classList.add("hidden");
+      if (!box.classList.contains("hidden")) {
+        document.getElementById("rawTextarea").value = rawContent;
+      }
+    }
+
+    async function saveRawTargets() {
+      const raw = document.getElementById("rawTextarea").value;
+      const res = await api("/api/targets", "POST", { raw });
+      if (!res.ok) {
+        showToast(res.error || "Failed to save raw targets.txt", true);
+        return;
+      }
+      targets = res.targets || [];
+      rawContent = res.raw || "";
+      renderTargets();
+      document.getElementById("rawEditorBox").classList.add("hidden");
+      showToast("Saved targets.txt");
+    }
+
+    async function loadStatus() {
+      const s = await api("/api/monitor/status");
+      const pill = document.getElementById("statusPill");
+      const dot = document.getElementById("statusDot");
+      const txt = document.getElementById("statusText");
+      const btnStart = document.getElementById("btnStart");
+      const btnStop = document.getElementById("btnStop");
+
+      if (s.running) {
+        pill.className = "status-pill live";
+        dot.className = "dot running";
+        txt.textContent = `Live (PID ${s.pid})`;
+        btnStart.style.display = "none";
+        btnStop.style.display = "inline-flex";
+      } else {
+        pill.className = "status-pill";
+        dot.className = "dot";
+        txt.textContent = s.once_running ? "Checking..." : "Paused";
+        btnStart.style.display = "inline-flex";
+        btnStop.style.display = "none";
+      }
+
+      document.getElementById("intervalLabel").textContent = s.check_interval;
+      document.getElementById("ecoLabel").textContent = s.eco_priority ? "ON" : "OFF";
+      document.getElementById("adaptiveLabel").textContent = s.adaptive_polling ? "ON" : "OFF";
+
+      const ch = s.channels || {};
+      const labels = [
+        ["sound", "🔊 Sound"],
+        ["toast", "🪟 Toast"],
+        ["browser", "🌐 Auto-Browser"],
+        ["telegram", "📱 Telegram"],
+        ["discord", "💬 Discord"],
+        ["email", "📧 Email"],
+        ["webhook", "🔗 Webhook"],
+      ];
+      document.getElementById("channelTags").innerHTML = labels
+        .map(([k, label]) => `<span class="tag ${ch[k] ? "on" : ""}">${label}</span>`)
+        .join("");
+    }
+
+    async function startMonitor() {
+      const res = await api("/api/monitor/start", "POST", {});
+      showToast(res.message || "Monitor started", !res.ok);
+      await loadStatus();
+    }
+
+    async function stopMonitor() {
+      const res = await api("/api/monitor/stop", "POST", {});
+      showToast(res.message || "Monitor paused", !res.ok);
+      await loadStatus();
+    }
+
+    async function checkOnce() {
+      const res = await api("/api/monitor/check-once", "POST", {});
+      showToast(res.message || res.error, !res.ok);
+      await loadStatus();
+    }
+
+    async function testAlert() {
+      const res = await api("/api/monitor/test-alert", "POST", {});
+      showToast(res.message || "Test alert sent", !res.ok);
+    }
+
+    function switchLogTab(tab) {
+      activeLogTab = tab;
+      document.getElementById("tabMonitorLog").classList.toggle("active", tab === "monitor");
+      document.getElementById("tabBookingsLog").classList.toggle("active", tab === "bookings");
+      renderLogs();
+    }
+
+    function renderLogs() {
+      const view = document.getElementById("logView");
+      const content = activeLogTab === "monitor"
+        ? (logsData.monitor_log || "No monitor log entries yet.")
+        : (logsData.bookings_log || "No opened bookings recorded yet.");
+      view.textContent = content;
+      if (document.getElementById("autoScroll").checked) {
+        view.scrollTop = view.scrollHeight;
+      }
+    }
+
+    async function loadLogs() {
+      logsData = await api("/api/logs?lines=200");
+      renderLogs();
+    }
+
+    async function clearMonitorLog() {
+      await api("/api/logs/clear", "POST", {});
+      await loadLogs();
+      showToast("Monitor log cleared");
+    }
+
+    // Initial load & polling
+    loadTargets();
+    loadStatus();
+    loadLogs();
+    setInterval(loadStatus, 3000);
+    setInterval(loadLogs, 2500);
+  </script>
+</body>
+</html>

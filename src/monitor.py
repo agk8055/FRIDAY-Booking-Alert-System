@@ -11,15 +11,16 @@ import logging
 import os
 import signal
 import sys
+import threading
 import time
 from typing import Dict, List, Optional
 
 try:
-    from .config import TargetItem, config, BOOKINGS_LOG_FILE, MONITOR_LOG_FILE
+    from .config import TargetItem, config, load_targets_from_file_or_env, BOOKINGS_LOG_FILE, MONITOR_LOG_FILE
     from .checker import BMSChecker, CheckResult
     from .notifier import dispatch_alerts
 except ImportError:
-    from config import TargetItem, config, BOOKINGS_LOG_FILE, MONITOR_LOG_FILE
+    from config import TargetItem, config, load_targets_from_file_or_env, BOOKINGS_LOG_FILE, MONITOR_LOG_FILE
     from checker import BMSChecker, CheckResult
     from notifier import dispatch_alerts
 
@@ -95,7 +96,8 @@ def print_banner(targets: List[TargetItem]):
     for idx, t in enumerate(targets, 1):
         th_info = f" | 🏛️ {t.theatres_display}" if t.target_theatres else " | 🏛️ ANY Theatre"
         city_info = f" | 📍 {t.city}" if t.city else ""
-        print(f"  {idx}. [{t.slug or 'Direct URL'}]{city_info}{th_info}")
+        date_info = f" | 📅 {t.target_date}" if t.target_date else ""
+        print(f"  {idx}. [{t.slug or 'Direct URL'}]{city_info}{date_info}{th_info}")
         print(f"     🔗 {t.url}")
     print("-" * 68)
     print(f"⚡ Primary Engine: curl_cffi (Fast TLS) | 🛡️ Fallback: Headless Chrome")
@@ -107,7 +109,14 @@ def print_banner(targets: List[TargetItem]):
     print("Press Ctrl+C at any time to stop monitoring.\n")
 
 
-def monitor_loop(targets: List[TargetItem], interval: int, run_once: bool = False):
+def monitor_loop(
+    targets: List[TargetItem],
+    interval: int,
+    run_once: bool = False,
+    pause_event: Optional[threading.Event] = None,
+    wake_event: Optional[threading.Event] = None,
+    reload_from_file: bool = False,
+):
     global _ACTIVE_DRIVER
     checker = BMSChecker()
     check_cycle = 0
@@ -123,6 +132,19 @@ def monitor_loop(targets: List[TargetItem], interval: int, run_once: bool = Fals
         return _ACTIVE_DRIVER
 
     while True:
+        if pause_event is not None and pause_event.is_set():
+            logger.info("⏸️ Monitor paused from dashboard. Waiting to resume...")
+            while pause_event.is_set():
+                if wake_event is not None:
+                    wake_event.wait(timeout=1.0)
+                    wake_event.clear()
+                else:
+                    time.sleep(1.0)
+            logger.info("▶️ Monitor resumed from dashboard.")
+
+        if reload_from_file:
+            targets = load_targets_from_file_or_env()
+
         check_cycle += 1
         now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         print(f"\n[{now_str}] --- Cycle #{check_cycle}: Checking {len(targets)} Target(s) ---")
@@ -222,6 +244,9 @@ def main():
     parser.add_argument("--interval", type=int, default=config.check_interval, help="Check interval in seconds")
     parser.add_argument("--once", action="store_true", help="Perform a single check and exit")
     parser.add_argument("--test", action="store_true", help="Test alert notifications without monitoring")
+    parser.add_argument("--no-dashboard", action="store_true", help="Do not start the local web dashboard")
+    parser.add_argument("--no-browser", action="store_true", help="Do not auto-open the dashboard in browser")
+    parser.add_argument("--dashboard-port", type=int, default=8765, help="Dashboard port (default: 8765)")
     args = parser.parse_args()
 
     if args.test:
@@ -240,11 +265,55 @@ def main():
         return
 
     targets = config.targets
+    reload_from_file = True
     if args.url:
         targets = [TargetItem(url=u) for u in args.url]
+        reload_from_file = False
+
+    pause_event: Optional[threading.Event] = None
+    wake_event: Optional[threading.Event] = None
+    dashboard_server = None
+
+    if not args.once and not args.no_dashboard:
+        try:
+            try:
+                from .dashboard import start_dashboard_background
+            except ImportError:
+                from dashboard import start_dashboard_background
+
+            pause_event = threading.Event()
+            wake_event = threading.Event()
+            dashboard_server = start_dashboard_background(
+                host="127.0.0.1",
+                port=args.dashboard_port,
+                open_browser=not args.no_browser,
+                pause_event=pause_event,
+                wake_event=wake_event,
+            )
+            if dashboard_server is not None:
+                logger.info(f"🌐 Dashboard live at http://127.0.0.1:{args.dashboard_port}")
+            else:
+                logger.info(f"Notice: Dashboard port {args.dashboard_port} already in use; continuing monitor only.")
+        except Exception as exc:
+            logger.warning(f"Notice: Could not start dashboard server: {exc}")
 
     print_banner(targets)
-    monitor_loop(targets=targets, interval=args.interval, run_once=args.once)
+    try:
+        monitor_loop(
+            targets=targets,
+            interval=args.interval,
+            run_once=args.once,
+            pause_event=pause_event,
+            wake_event=wake_event,
+            reload_from_file=reload_from_file,
+        )
+    finally:
+        if dashboard_server is not None:
+            try:
+                dashboard_server.shutdown()
+                dashboard_server.server_close()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":
