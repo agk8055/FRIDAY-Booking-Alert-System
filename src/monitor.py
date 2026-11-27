@@ -144,6 +144,7 @@ def monitor_loop(
 
         if reload_from_file:
             targets = load_targets_from_file_or_env()
+            interval = config.reload_check_interval()
 
         check_cycle += 1
         now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -158,7 +159,11 @@ def monitor_loop(
             sleep_duration = calculate_sleep_interval(interval)
             logger.info(f"Cycle #{check_cycle} done. Sleeping for {sleep_duration} seconds...")
             try:
-                time.sleep(sleep_duration)
+                if wake_event is not None:
+                    if wake_event.wait(timeout=sleep_duration):
+                        wake_event.clear()
+                else:
+                    time.sleep(sleep_duration)
             except KeyboardInterrupt:
                 cleanup_driver()
                 print("\nMonitoring stopped by user.")
@@ -245,7 +250,11 @@ def monitor_loop(
         sleep_duration = calculate_sleep_interval(interval)
         logger.info(f"Cycle #{check_cycle} done. Sleeping for {sleep_duration} seconds...")
         try:
-            time.sleep(sleep_duration)
+            if wake_event is not None:
+                if wake_event.wait(timeout=sleep_duration):
+                    wake_event.clear()
+            else:
+                time.sleep(sleep_duration)
         except KeyboardInterrupt:
             cleanup_driver()
             print("\nMonitoring stopped by user.")

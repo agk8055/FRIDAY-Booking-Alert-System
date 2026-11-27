@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Optional
 try:
     from .config import (
         BOOKINGS_LOG_FILE,
+        ENV_FILE,
         MONITOR_LOG_FILE,
         PROJECT_ROOT,
         TARGETS_FILE,
@@ -32,10 +33,12 @@ try:
         TheatreTarget,
         config,
         parse_theatres,
+        update_check_interval,
     )
 except ImportError:
     from config import (
         BOOKINGS_LOG_FILE,
+        ENV_FILE,
         MONITOR_LOG_FILE,
         PROJECT_ROOT,
         TARGETS_FILE,
@@ -43,36 +46,13 @@ except ImportError:
         TheatreTarget,
         config,
         parse_theatres,
+        update_check_interval,
     )
 
 ASSETS_DIR = PROJECT_ROOT / "assets"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 DASHBOARD_HTML = STATIC_DIR / "dashboard.html"
 
-DEFAULT_HEADER = """# ==============================================================================
-# BookMyShow Monitoring Targets
-#
-# Paste any BookMyShow Movie URL (one per line).
-# To focus on specific theatre(s), add a pipe '|' followed by comma-separated Cinema URLs!
-#
-# Format:
-#   <Movie URL>
-#   <Movie URL> | <Cinema Buytickets URL with Date>
-#   <Movie URL> | <Cinema URL 1>, <Cinema URL 2> | @YYYYMMDD
-#
-# Examples:
-#   # 1. Any theatre in the city:
-#   https://in.bookmyshow.com/movies/kochi/avengers-doomsday/ET00439706
-#
-#   # 2. Specific theatre on a specific date (recommended - checks theatre directly first):
-#   https://in.bookmyshow.com/movies/kochi/avengers-doomsday/ET00439706 | https://in.bookmyshow.com/cinemas/KOCH/vanitha-cineplex-rgb-laser-4k-3d-atmos-edappally/buytickets/VMHE/20261127
-#
-#   # 3. Multiple base cinema URLs with shared @YYYYMMDD date parameter:
-#   https://in.bookmyshow.com/movies/coimbatore/dune-part-three/ET00491771 | https://in.bookmyshow.com/cinemas/coimbatore/broadway-cinemas-coimbatore/BWCB, https://in.bookmyshow.com/cinemas/coimbatore/the-cinema-brookefields-mall-coimbatore/SPIB | @20261127
-# ==============================================================================
-"""
-
-DISABLED_PREFIX = "# [DISABLED] "
 _HEALTH_BODY = b'{"ok":true}'
 _HEALTH_CONTENT_LENGTH = str(len(_HEALTH_BODY))
 
@@ -234,6 +214,22 @@ class MonitorManager:
         )
         return {"ok": True, "message": "Test alert dispatched across enabled channels."}
 
+    def set_check_interval(self, seconds: Any) -> Dict[str, Any]:
+        try:
+            new_val = update_check_interval(seconds, env_file=ENV_FILE)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+
+        with self._lock:
+            if self._in_process and self._in_process_running and self._wake_event is not None:
+                self._wake_event.set()
+
+        return {
+            "ok": True,
+            "check_interval": new_val,
+            "message": f"Check interval updated to {new_val}s.",
+        }
+
 
 monitor_manager = MonitorManager()
 atexit.register(monitor_manager.stop)
@@ -303,87 +299,139 @@ def parse_target_line(line: str, enabled: bool = True) -> Optional[Dict[str, Any
     }
 
 
-def serialize_target_dict(target: Dict[str, Any]) -> str:
-    url = (target.get("url") or "").strip()
+def _extract_theatre_inputs(raw_theatres: Any) -> List[str]:
+    if isinstance(raw_theatres, list):
+        items: List[str] = []
+        for entry in raw_theatres:
+            if isinstance(entry, dict):
+                val = str(entry.get("raw_input") or entry.get("url") or "").strip()
+            else:
+                val = str(entry).strip()
+            if val:
+                items.append(val)
+        return items
+    if isinstance(raw_theatres, str):
+        return [t.strip() for t in raw_theatres.split(",") if t.strip()]
+    return []
+
+
+def build_target_dict(entry: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    url_clean = str(entry.get("url") or "").strip()
+    parsed_url = urllib.parse.urlparse(url_clean)
+    if parsed_url.scheme not in ("http", "https") or not parsed_url.netloc:
+        return None
+
+    target_date = re.sub(r"[^0-9]", "", str(entry.get("target_date") or "").strip())
+    if target_date and not re.fullmatch(r"\d{8}", target_date):
+        target_date = ""
+
+    raw_theatres = entry.get("theatres") if "theatres" in entry else entry.get("theatres_raw")
+    theatre_inputs = _extract_theatre_inputs(raw_theatres)
+    theatres = parse_theatres(",".join(theatre_inputs)) if theatre_inputs else []
+
+    item = TargetItem(url=url_clean, target_theatres=theatres, target_date=target_date)
+    effective_date = item.target_date
+    if not effective_date:
+        for th in item.target_theatres:
+            if th.date:
+                effective_date = th.date
+                break
+
+    return {
+        "enabled": bool(entry.get("enabled", True)),
+        "url": item.url,
+        "city": item.city,
+        "slug": item.slug,
+        "title": format_slug_title(item.slug) or ("Cinema Schedule" if item.is_cinema else "BookMyShow Target"),
+        "event_code": item.event_code,
+        "is_cinema": item.is_cinema,
+        "target_date": effective_date,
+        "theatres_raw": ", ".join(th.raw_input for th in theatres),
+        "theatres_display": item.theatres_display,
+        "theatres": [
+            {
+                "raw_input": th.raw_input,
+                "url": th.url,
+                "name": th.name,
+                "code": th.code,
+                "date": th.date,
+            }
+            for th in item.target_theatres
+        ],
+    }
+
+
+def serialize_target_entry(target: Dict[str, Any]) -> Dict[str, Any]:
+    url = str(target.get("url") or "").strip()
     parsed_url = urllib.parse.urlparse(url)
     if parsed_url.scheme not in ("http", "https") or not parsed_url.netloc:
         raise ValueError("Target URL must be a valid URL starting with http:// or https://")
 
-    theatres_raw = (target.get("theatres_raw") or "").strip()
-    target_date = re.sub(r"[^0-9]", "", (target.get("target_date") or "").strip())
+    raw_theatres = target.get("theatres_raw")
+    if raw_theatres is None:
+        raw_theatres = target.get("theatres")
+    theatre_items = _extract_theatre_inputs(raw_theatres)
+
+    target_date = re.sub(r"[^0-9]", "", str(target.get("target_date") or "").strip())
     if target_date and not re.fullmatch(r"\d{8}", target_date):
         raise ValueError("Target date must be in YYYYMMDD format (e.g. 20261217).")
 
-    parts = [url]
-    if theatres_raw:
-        # Normalize comma-separated theatre entries
-        theatre_items = [t.strip() for t in theatres_raw.split(",") if t.strip()]
-        if theatre_items:
-            parts.append(", ".join(theatre_items))
-
-    if target_date:
-        # Only append @YYYYMMDD if theatre URLs don't already end with that exact date
-        already_dated = theatres_raw and all(
-            re.search(rf"/{target_date}/?$", t.strip()) for t in theatres_raw.split(",") if t.strip()
-        )
-        if not already_dated:
-            parts.append(f"@{target_date}")
-
-    line = " | ".join(parts)
-    enabled = target.get("enabled", True)
-    return line if enabled else f"{DISABLED_PREFIX}{line}"
+    return {
+        "enabled": bool(target.get("enabled", True)),
+        "url": url,
+        "theatres": theatre_items,
+        "target_date": target_date,
+    }
 
 
 def read_targets_file() -> Dict[str, Any]:
     targets: List[Dict[str, Any]] = []
-    raw_content = ""
+    raw_content = json.dumps({"targets": []}, indent=2) + "\n"
 
     if TARGETS_FILE.exists():
         raw_content = TARGETS_FILE.read_text(encoding="utf-8")
-        for line in raw_content.splitlines():
-            stripped = line.strip()
-            if not stripped:
-                continue
-            if stripped.startswith(DISABLED_PREFIX):
-                parsed = parse_target_line(stripped[len(DISABLED_PREFIX) :], enabled=False)
-                if parsed:
-                    targets.append(parsed)
-            elif not stripped.startswith("#"):
-                parsed = parse_target_line(stripped, enabled=True)
-                if parsed:
-                    targets.append(parsed)
+        if raw_content.strip():
+            data = json.loads(raw_content)
+            entries = data.get("targets", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+            for entry in entries:
+                if isinstance(entry, dict):
+                    built = build_target_dict(entry)
+                    if built:
+                        targets.append(built)
 
     return {"targets": targets, "raw": raw_content}
 
 
 def write_targets_file(targets: List[Dict[str, Any]]) -> Dict[str, Any]:
-    header_lines: List[str] = []
-    if TARGETS_FILE.exists():
-        existing = TARGETS_FILE.read_text(encoding="utf-8").splitlines()
-        for line in existing:
-            stripped = line.strip()
-            if stripped.startswith("#") and not stripped.startswith(DISABLED_PREFIX):
-                header_lines.append(line)
-            elif not stripped and header_lines and header_lines[-1].strip().startswith("#"):
-                # Stop after the top comment banner
-                break
-            else:
-                break
-
-    if not header_lines:
-        header_text = DEFAULT_HEADER.rstrip()
-    else:
-        header_text = "\n".join(header_lines).rstrip()
-
-    serialized_lines = [serialize_target_dict(t) for t in targets]
-    body = "\n".join(serialized_lines)
-    content = f"{header_text}\n\n{body}\n" if body else f"{header_text}\n"
+    serialized = [serialize_target_entry(t) for t in targets]
+    content = json.dumps({"targets": serialized}, indent=2) + "\n"
     TARGETS_FILE.write_text(content, encoding="utf-8")
     return read_targets_file()
 
 
 def write_raw_targets_file(raw_content: str) -> Dict[str, Any]:
-    TARGETS_FILE.write_text(raw_content, encoding="utf-8")
+    try:
+        data = json.loads(raw_content)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON: {exc}") from exc
+
+    if isinstance(data, dict):
+        entries = data.get("targets")
+        if not isinstance(entries, list):
+            raise ValueError('JSON object must contain a "targets" array.')
+    elif isinstance(data, list):
+        entries = data
+    else:
+        raise ValueError('JSON must be an object with a "targets" array or a JSON array of targets.')
+
+    serialized: List[Dict[str, Any]] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise ValueError("Each target entry must be a JSON object.")
+        serialized.append(serialize_target_entry(entry))
+
+    formatted = json.dumps({"targets": serialized}, indent=2) + "\n"
+    TARGETS_FILE.write_text(formatted, encoding="utf-8")
     return read_targets_file()
 
 
@@ -519,6 +567,21 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_html(DASHBOARD_HTML)
         elif path == "/assets/banner.png":
             self._send_file(ASSETS_DIR / "banner.png", "image/png")
+        elif path.startswith("/static/"):
+            rel_name = path[len("/static/"):]
+            if not rel_name or "/" in rel_name or "\\" in rel_name or ".." in rel_name:
+                self._send_json({"error": "Not found"}, status=HTTPStatus.NOT_FOUND)
+                return
+            static_file = STATIC_DIR / rel_name
+            ext = static_file.suffix.lower()
+            ctype_map = {
+                ".css": "text/css; charset=utf-8",
+                ".js": "application/javascript; charset=utf-8",
+                ".html": "text/html; charset=utf-8",
+                ".png": "image/png",
+                ".svg": "image/svg+xml",
+            }
+            self._send_file(static_file, ctype_map.get(ext, "application/octet-stream"))
         elif path == "/api/targets":
             self._send_json(read_targets_file())
         elif path == "/api/monitor/status":
@@ -590,6 +653,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         elif path == "/api/monitor/test-alert":
             self._send_json(monitor_manager.test_alert())
+
+        elif path == "/api/monitor/interval":
+            raw_val = body.get("check_interval", body.get("interval"))
+            res = monitor_manager.set_check_interval(raw_val)
+            status = HTTPStatus.OK if res.get("ok") else HTTPStatus.BAD_REQUEST
+            self._send_json(res, status=status)
 
         elif path == "/api/logs/clear":
             try:

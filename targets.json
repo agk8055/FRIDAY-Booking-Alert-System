@@ -1,0 +1,13 @@
+{
+  "targets": [
+    {
+      "enabled": true,
+      "url": "https://in.bookmyshow.com/movies/kochi/avengers-doomsday/ET00439706",
+      "theatres": [
+        "https://in.bookmyshow.com/cinemas/kochi/vanitha-cineplex-rgb-laser-4k-3d-atmos-edappally/buytickets/VMHE",
+        "https://in.bookmyshow.com/cinemas/KOCH/padma-cinema-kochi/buytickets/PMCE"
+      ],
+      "target_date": "20261217"
+    }
+  ]
+}

@@ -43,14 +43,22 @@ class TestTheatreTargetParsing(unittest.TestCase):
         )
         self.assertEqual(item.target_theatres[0].date, "20261127")
 
-    def test_load_targets_with_at_date_parameter(self):
-        content = (
-            "https://in.bookmyshow.com/movies/coimbatore/dune-part-three/ET00491771 | "
-            "https://in.bookmyshow.com/cinemas/coimbatore/broadway-cinemas-coimbatore/BWCB | @20261127\n"
-        )
+    def test_load_targets_with_target_date_parameter(self):
+        payload = {
+            "targets": [
+                {
+                    "enabled": True,
+                    "url": "https://in.bookmyshow.com/movies/coimbatore/dune-part-three/ET00491771",
+                    "theatres": [
+                        "https://in.bookmyshow.com/cinemas/coimbatore/broadway-cinemas-coimbatore/BWCB"
+                    ],
+                    "target_date": "20261127",
+                }
+            ]
+        }
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_root = Path(tmpdir)
-            (tmp_root / "targets.txt").write_text(content, encoding="utf-8")
+            (tmp_root / "targets.json").write_text(json.dumps(payload), encoding="utf-8")
             with patch("config.PROJECT_ROOT", tmp_root):
                 targets = load_targets_from_file_or_env()
 
@@ -62,10 +70,19 @@ class TestTheatreTargetParsing(unittest.TestCase):
         )
 
     def test_load_targets_returns_empty_when_all_disabled_or_empty(self):
-        content = "# [DISABLED] https://in.bookmyshow.com/movies/kochi/avengers-doomsday/ET00439706\n"
+        payload = {
+            "targets": [
+                {
+                    "enabled": False,
+                    "url": "https://in.bookmyshow.com/movies/kochi/avengers-doomsday/ET00439706",
+                    "theatres": [],
+                    "target_date": "",
+                }
+            ]
+        }
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_root = Path(tmpdir)
-            (tmp_root / "targets.txt").write_text(content, encoding="utf-8")
+            (tmp_root / "targets.json").write_text(json.dumps(payload), encoding="utf-8")
             with patch("config.PROJECT_ROOT", tmp_root), patch.dict("os.environ", {}, clear=False):
                 targets = load_targets_from_file_or_env()
 

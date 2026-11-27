@@ -41,13 +41,26 @@ class TestDashboardServerAndAPI(unittest.TestCase):
     def setUp(self):
         self.tmp_dir = tempfile.TemporaryDirectory()
         self.tmp_path = Path(self.tmp_dir.name)
-        self.targets_file = self.tmp_path / "targets.txt"
+        self.targets_file = self.tmp_path / "targets.json"
         self.monitor_log = self.tmp_path / "monitor.log"
         self.bookings_log = self.tmp_path / "booking_opened.txt"
 
         self.targets_file.write_text(
-            "https://in.bookmyshow.com/movies/kochi/avengers-doomsday/ET00439706 | "
-            "https://in.bookmyshow.com/cinemas/KOCH/vanitha-cineplex/buytickets/VMHE | @20261217\n",
+            json.dumps(
+                {
+                    "targets": [
+                        {
+                            "enabled": True,
+                            "url": "https://in.bookmyshow.com/movies/kochi/avengers-doomsday/ET00439706",
+                            "theatres": [
+                                "https://in.bookmyshow.com/cinemas/KOCH/vanitha-cineplex/buytickets/VMHE"
+                            ],
+                            "target_date": "20261217",
+                        }
+                    ]
+                },
+                indent=2,
+            ),
             encoding="utf-8",
         )
         self.monitor_log.write_text("2026-11-27 21:00:00 [INFO] Monitor initialized.\n", encoding="utf-8")
@@ -139,6 +152,17 @@ class TestDashboardServerAndAPI(unittest.TestCase):
         self.assertEqual(ctype_img, "image/png")
         self.assertGreater(len(raw_img), 100)
 
+        status_css, ctype_css, raw_css = self._request("GET", "/static/dashboard.css")
+        self.assertEqual(status_css, 200)
+        self.assertIn("text/css", ctype_css)
+        css_text = raw_css.decode("utf-8")
+        self.assertIn("--bg: #000000", css_text)
+        self.assertIn('[data-theme="light"]', css_text)
+
+        # Path traversal in /static/ is blocked
+        status_bad, _, _ = self._request("GET", "/static/../dashboard.py")
+        self.assertEqual(status_bad, 404)
+
     def test_targets_crud_and_parse(self):
         status, _, raw = self._request("GET", "/api/targets")
         self.assertEqual(status, 200)
@@ -207,15 +231,37 @@ class TestDashboardServerAndAPI(unittest.TestCase):
         self.assertEqual(res["targets"][0]["theatres"][0]["code"], "VMHE")
         self.assertEqual(res["targets"][0]["theatres"][1]["code"], "PMCE")
 
-        # Save raw targets.txt
+        # Save raw targets.json
         status, _, raw = self._request(
             "POST",
             "/api/targets",
-            {"raw": "# comment\nhttps://in.bookmyshow.com/movies/kochi/avengers-doomsday/ET00439706\n"},
+            {
+                "raw": json.dumps(
+                    {
+                        "targets": [
+                            {
+                                "enabled": True,
+                                "url": "https://in.bookmyshow.com/movies/kochi/avengers-doomsday/ET00439706",
+                                "theatres": [],
+                                "target_date": "",
+                            }
+                        ]
+                    }
+                )
+            },
         )
         self.assertEqual(status, 200)
         res = json.loads(raw)
         self.assertEqual(len(res["targets"]), 1)
+
+        # Invalid raw JSON rejected with 400
+        status_bad, _, raw_bad = self._request(
+            "POST",
+            "/api/targets",
+            {"raw": "{not valid json"},
+        )
+        self.assertEqual(status_bad, 400)
+        self.assertFalse(json.loads(raw_bad)["ok"])
 
     def test_logs_and_clear_targets(self):
         status, _, raw = self._request("GET", "/api/logs?lines=bad")
@@ -262,6 +308,42 @@ class TestDashboardServerAndAPI(unittest.TestCase):
             self.assertTrue(json.loads(raw)["ok"])
             self.assertFalse(pause_ev.is_set())
             self.assertTrue(wake_ev.is_set())
+
+    def test_update_check_interval_persists_and_wakes(self):
+        env_file = self.tmp_path / ".env"
+        env_file.write_text("CHECK_INTERVAL_SECONDS=60\nHEADLESS_BROWSER=true\n", encoding="utf-8")
+
+        pause_ev = threading.Event()
+        wake_ev = threading.Event()
+        mgr = dashboard.MonitorManager()
+        mgr.attach_in_process(pause_ev, wake_ev)
+
+        orig_interval = dashboard.config.check_interval
+        orig_env_val = os.environ.get("CHECK_INTERVAL_SECONDS")
+        try:
+            with patch.object(dashboard, "ENV_FILE", env_file), \
+                 patch.object(dashboard, "monitor_manager", mgr):
+                status, _, raw = self._request("POST", "/api/monitor/interval", {"check_interval": 25})
+                self.assertEqual(status, 200)
+                data = json.loads(raw)
+                self.assertTrue(data["ok"])
+                self.assertEqual(data["check_interval"], 25)
+                self.assertEqual(dashboard.config.check_interval, 25)
+                self.assertTrue(wake_ev.is_set())
+                self.assertIn("CHECK_INTERVAL_SECONDS=25", env_file.read_text(encoding="utf-8"))
+                self.assertIn("HEADLESS_BROWSER=true", env_file.read_text(encoding="utf-8"))
+
+                # Invalid values rejected
+                for bad in [2, 100000, "abc", True]:
+                    status_bad, _, raw_bad = self._request("POST", "/api/monitor/interval", {"check_interval": bad})
+                    self.assertEqual(status_bad, 400)
+                    self.assertFalse(json.loads(raw_bad)["ok"])
+        finally:
+            dashboard.config.check_interval = orig_interval
+            if orig_env_val is None:
+                os.environ.pop("CHECK_INTERVAL_SECONDS", None)
+            else:
+                os.environ["CHECK_INTERVAL_SECONDS"] = orig_env_val
 
     def test_monitor_test_flag_works_without_relative_import_error(self):
         with patch.object(sys, "argv", ["run.py", "--test", "--no-dashboard"]), \

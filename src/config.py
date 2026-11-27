@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import shutil
@@ -9,6 +10,7 @@ from dotenv import load_dotenv
 
 # Base paths
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+ENV_FILE = PROJECT_ROOT / ".env"
 DATA_DIR = Path(os.getenv("DATA_DIR")).resolve() if os.getenv("DATA_DIR") else PROJECT_ROOT
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 LOGS_DIR = DATA_DIR / "logs"
@@ -16,14 +18,17 @@ LOGS_DIR.mkdir(parents=True, exist_ok=True)
 BOOKINGS_LOG_FILE = str(LOGS_DIR / "booking_opened.txt")
 MONITOR_LOG_FILE = str(LOGS_DIR / "monitor.log")
 
-TARGETS_FILE = DATA_DIR / "targets.txt"
+TARGETS_FILE = DATA_DIR / "targets.json"
 if DATA_DIR != PROJECT_ROOT and not TARGETS_FILE.exists():
-    _seed_targets = PROJECT_ROOT / "targets.txt"
+    _seed_targets = PROJECT_ROOT / "targets.json"
     if _seed_targets.exists():
         shutil.copy2(_seed_targets, TARGETS_FILE)
 
 # Load environment variables from .env in PROJECT_ROOT
-load_dotenv(PROJECT_ROOT / ".env")
+load_dotenv(ENV_FILE)
+
+MIN_CHECK_INTERVAL = 5
+MAX_CHECK_INTERVAL = 86400
 
 
 @dataclass
@@ -183,45 +188,55 @@ class TargetItem:
 
 def load_targets_from_file_or_env() -> List[TargetItem]:
     targets = []
-    targets_file = (DATA_DIR / "targets.txt") if os.getenv("DATA_DIR") else (PROJECT_ROOT / "targets.txt")
+    targets_file = (DATA_DIR / "targets.json") if os.getenv("DATA_DIR") else (PROJECT_ROOT / "targets.json")
     if not targets_file.exists():
-        targets_file = PROJECT_ROOT / "targets.txt"
+        targets_file = PROJECT_ROOT / "targets.json"
     if not targets_file.exists():
-        targets_file = Path("targets.txt")
-    
+        targets_file = Path("targets.json")
+
     if targets_file.exists():
         try:
-            with open(targets_file, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line or line.startswith("#"):
-                        continue
+            raw_text = targets_file.read_text(encoding="utf-8").strip()
+            if not raw_text:
+                return targets
+            data = json.loads(raw_text)
+            entries = data.get("targets", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
 
+            for entry in entries:
+                if not isinstance(entry, dict) or not entry.get("enabled", True):
+                    continue
+
+                url_clean = str(entry.get("url") or "").strip()
+                if not url_clean.startswith("http"):
+                    continue
+
+                target_date = re.sub(r"[^0-9]", "", str(entry.get("target_date") or "").strip())
+                if target_date and not re.fullmatch(r"\d{8}", target_date):
                     target_date = ""
-                    date_match = re.search(r"@(\d{8})\b", line)
-                    if date_match:
-                        target_date = date_match.group(1)
-                        line = re.sub(r"\s*@\d{8}\b", "", line).strip()
 
+                raw_theatres = entry.get("theatres")
+                if isinstance(raw_theatres, list):
+                    theatre_inputs = []
+                    for th in raw_theatres:
+                        if isinstance(th, dict):
+                            val = str(th.get("raw_input") or th.get("url") or "").strip()
+                        else:
+                            val = str(th).strip()
+                        if val:
+                            theatre_inputs.append(val)
+                    theatres = parse_theatres(",".join(theatre_inputs)) if theatre_inputs else []
+                elif isinstance(raw_theatres, str) and raw_theatres.strip():
+                    theatres = parse_theatres(raw_theatres)
+                else:
                     theatres = []
-                    url_part = line
-                    # Format: <Movie URL> | <Theatre URL 1>, <Theatre URL 2> [@YYYYMMDD]
-                    if "|" in line:
-                        parts = [p.strip() for p in line.split("|") if p.strip()]
-                        if parts:
-                            url_part = parts[0]
-                            if len(parts) > 1:
-                                theatres = parse_theatres(",".join(parts[1:]))
-                    
-                    url_clean = url_part.strip()
-                    if url_clean.startswith("http"):
-                        targets.append(
-                            TargetItem(
-                                url=url_clean,
-                                target_theatres=theatres,
-                                target_date=target_date,
-                            )
-                        )
+
+                targets.append(
+                    TargetItem(
+                        url=url_clean,
+                        target_theatres=theatres,
+                        target_date=target_date,
+                    )
+                )
         except Exception as e:
             print(f"Notice: Failed to read {targets_file}: {e}")
 
@@ -271,6 +286,55 @@ class Config:
 
     def reload_targets(self):
         self.targets = load_targets_from_file_or_env()
+
+    def reload_check_interval(self, env_file: Path = ENV_FILE) -> int:
+        if env_file.exists():
+            try:
+                for line in env_file.read_text(encoding="utf-8").splitlines():
+                    stripped = line.strip()
+                    if stripped.startswith("CHECK_INTERVAL_SECONDS="):
+                        val_str = stripped.split("=", 1)[1].strip().strip('"').strip("'")
+                        val = int(val_str)
+                        if MIN_CHECK_INTERVAL <= val <= MAX_CHECK_INTERVAL:
+                            self.check_interval = val
+                            os.environ["CHECK_INTERVAL_SECONDS"] = str(val)
+                        break
+            except Exception:
+                pass
+        return self.check_interval
+
+
+def update_check_interval(seconds: int, env_file: Path = ENV_FILE) -> int:
+    """Validate, apply in-memory, and persist CHECK_INTERVAL_SECONDS to .env."""
+    if isinstance(seconds, bool):
+        raise ValueError(f"Check interval must be an integer between {MIN_CHECK_INTERVAL} and {MAX_CHECK_INTERVAL} seconds.")
+    try:
+        val = int(seconds)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Check interval must be an integer between {MIN_CHECK_INTERVAL} and {MAX_CHECK_INTERVAL} seconds.") from exc
+
+    if val < MIN_CHECK_INTERVAL or val > MAX_CHECK_INTERVAL:
+        raise ValueError(f"Check interval must be between {MIN_CHECK_INTERVAL} and {MAX_CHECK_INTERVAL} seconds.")
+
+    config.check_interval = val
+    os.environ["CHECK_INTERVAL_SECONDS"] = str(val)
+
+    new_line = f"CHECK_INTERVAL_SECONDS={val}"
+    if env_file.exists():
+        lines = env_file.read_text(encoding="utf-8").splitlines()
+        replaced = False
+        for i, line in enumerate(lines):
+            if re.match(r"^\s*CHECK_INTERVAL_SECONDS\s*=", line):
+                lines[i] = new_line
+                replaced = True
+                break
+        if not replaced:
+            lines.append(new_line)
+        env_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    else:
+        env_file.write_text(new_line + "\n", encoding="utf-8")
+
+    return val
 
 
 config = Config()
