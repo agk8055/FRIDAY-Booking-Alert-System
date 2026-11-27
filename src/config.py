@@ -128,6 +128,7 @@ class TargetItem:
     city: str = ""
     slug: str = ""
     event_code: str = ""
+    event_group_code: str = ""
     target_theatres: List[TheatreTarget] = field(default_factory=list)
     is_cinema: bool = False
     target_date: str = ""

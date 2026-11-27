@@ -43,6 +43,7 @@ class BMSChecker:
     def __init__(self, headless: bool = None):
         self.headless = headless if headless is not None else config.headless
         self._curl_session = None
+        self._event_group_cache: dict[str, str] = {}
 
     def _get_curl_session(self):
         if not CURL_CFFI_AVAILABLE:
@@ -143,6 +144,7 @@ class BMSChecker:
             search_roots = [state]
 
         ev_code_lower = target.event_code.lower() if target.event_code else ""
+        eg_code_lower = target.event_group_code.lower() if target.event_group_code else ""
         slug_lower = target.slug.lower() if target.slug else ""
         stack = list(search_roots)
 
@@ -161,9 +163,21 @@ class BMSChecker:
                 if ev_code_lower and isinstance(node_code, str) and node_code.lower() == ev_code_lower:
                     return node.get("eventName") or node.get("EventTitle") or node.get("EventName") or fallback_name
 
-                node_slug = node.get("slug") or node.get("eventSlug") or node.get("EventURL") or ""
-                if slug_lower and isinstance(node_slug, str) and slug_lower in node_slug.lower():
-                    return node.get("eventName") or node.get("EventTitle") or node.get("EventName") or fallback_name
+                node_group = (
+                    node.get("eventGroup")
+                    or node.get("EventGroup")
+                    or node.get("eventGroupCode")
+                    or node.get("EventGroupCode")
+                    or ""
+                )
+                if eg_code_lower and isinstance(node_group, str) and node_group.lower() == eg_code_lower:
+                    return node.get("EventName") or node.get("eventName") or node.get("EventTitle") or fallback_name
+
+                # Only fall back to slug matching when no event_code was specified on the target
+                if not ev_code_lower and slug_lower:
+                    node_slug = node.get("slug") or node.get("eventSlug") or node.get("EventURL") or ""
+                    if isinstance(node_slug, str) and slug_lower in node_slug.lower():
+                        return node.get("eventName") or node.get("EventTitle") or node.get("EventName") or fallback_name
 
                 for v in node.values():
                     if isinstance(v, (dict, list)):
@@ -192,18 +206,41 @@ class BMSChecker:
 
         ev_code_lower = target.event_code.lower() if target.event_code else ""
         slug_lower = target.slug.lower() if target.slug else ""
-        name_lower = fallback_name.lower() if fallback_name else ""
 
         for a in soup_cin.find_all("a", href=True):
             href_l = a["href"].lower()
             txt = a.text.strip()
-            txt_l = txt.lower()
-            if (ev_code_lower and ev_code_lower in href_l) or \
-               (slug_lower and slug_lower in href_l) or \
-               (name_lower and len(name_lower) >= 3 and name_lower in txt_l):
+            if ev_code_lower:
+                if ev_code_lower in href_l:
+                    return txt or fallback_name
+            elif slug_lower and slug_lower in href_l:
                 return txt or fallback_name
 
         return None
+
+    def _resolve_event_group_curl(self, target: TargetItem, session, headers: dict) -> str:
+        """Resolves and caches BookMyShow's unique EventGroup ID (EG...) from the movie page."""
+        cache_key = target.event_code or target.url
+        if target.event_group_code:
+            return target.event_group_code
+        if cache_key in self._event_group_cache:
+            target.event_group_code = self._event_group_cache[cache_key]
+            return target.event_group_code
+        if not target.url or target.is_cinema:
+            return ""
+        try:
+            resp = session.get(target.url, headers=headers, timeout=10)
+            if resp.status_code == 200:
+                state = self._extract_initial_state_from_html(resp.text)
+                eg = state.get("synopsisStore", {}).get("synopsis", {}).get("eventGroupCode", "")
+                if isinstance(eg, str) and eg:
+                    self._event_group_cache[cache_key] = eg
+                    target.event_group_code = eg
+                    logger.debug(f"Resolved EventGroup {eg} for {target.event_code or target.url}")
+                    return eg
+        except Exception as e:
+            logger.debug(f"Could not resolve EventGroup for {target.url}: {e}")
+        return ""
 
     def _check_target_theatres_curl(self, target: TargetItem, session) -> Optional[CheckResult]:
         """Checks target theatre URLs directly via curl_cffi, bypassing the movie page gate."""
@@ -213,6 +250,10 @@ class BMSChecker:
             "Referer": "https://in.bookmyshow.com/",
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         }
+        cache_key = target.event_code or target.url
+        if not target.event_group_code and cache_key in self._event_group_cache:
+            target.event_group_code = self._event_group_cache[cache_key]
+
         fallback_name = self._derive_movie_name(target)
         matched_theatres = []
         matched_url = ""
@@ -236,6 +277,13 @@ class BMSChecker:
             found_name = self._match_movie_in_cinema_page(
                 resp.text, state, target, fallback_name, target_date=th_target.date
             )
+            if not found_name and not target.event_group_code and isinstance(state, dict) and (
+                "venueShowtimesFunctionalApi" in state or "venueShowtimesNew" in state
+            ):
+                if self._resolve_event_group_curl(target, session, headers):
+                    found_name = self._match_movie_in_cinema_page(
+                        resp.text, state, target, fallback_name, target_date=th_target.date
+                    )
             if found_name:
                 matched_movie_name = found_name
                 label_name = f"{th_target.name} [{th_target.code}]"
@@ -597,8 +645,37 @@ class BMSChecker:
             details={"listed_movies": listed_movies}
         )
 
+    def _resolve_event_group_selenium(self, target: TargetItem, driver: webdriver.Chrome) -> str:
+        """Resolves and caches BookMyShow's unique EventGroup ID (EG...) via Selenium."""
+        cache_key = target.event_code or target.url
+        if target.event_group_code:
+            return target.event_group_code
+        if cache_key in self._event_group_cache:
+            target.event_group_code = self._event_group_cache[cache_key]
+            return target.event_group_code
+        if not target.url or target.is_cinema:
+            return ""
+        try:
+            driver.get(target.url)
+            WebDriverWait(driver, 8).until(
+                lambda d: d.execute_script("return document.readyState;") in ["interactive", "complete"]
+            )
+            state = driver.execute_script("return window.__INITIAL_STATE__;") or {}
+            eg = state.get("synopsisStore", {}).get("synopsis", {}).get("eventGroupCode", "")
+            if isinstance(eg, str) and eg:
+                self._event_group_cache[cache_key] = eg
+                target.event_group_code = eg
+                return eg
+        except Exception as e:
+            logger.debug(f"Could not resolve EventGroup via Selenium for {target.url}: {e}")
+        return ""
+
     def _check_target_theatres_selenium(self, target: TargetItem, driver: webdriver.Chrome) -> CheckResult:
         """Checks target theatre URLs directly via headless Chrome, bypassing the movie page gate."""
+        cache_key = target.event_code or target.url
+        if not target.event_group_code and cache_key in self._event_group_cache:
+            target.event_group_code = self._event_group_cache[cache_key]
+
         fallback_name = self._derive_movie_name(target)
         matched_theatres = []
         matched_url = ""
@@ -620,9 +697,17 @@ class BMSChecker:
                     )
                     continue
                 state = driver.execute_script("return window.__INITIAL_STATE__;") or {}
+                page_source = driver.page_source
                 found_name = self._match_movie_in_cinema_page(
-                    driver.page_source, state, target, fallback_name, target_date=th_target.date
+                    page_source, state, target, fallback_name, target_date=th_target.date
                 )
+                if not found_name and not target.event_group_code and isinstance(state, dict) and (
+                    "venueShowtimesFunctionalApi" in state or "venueShowtimesNew" in state
+                ):
+                    if self._resolve_event_group_selenium(target, driver):
+                        found_name = self._match_movie_in_cinema_page(
+                            page_source, state, target, fallback_name, target_date=th_target.date
+                        )
                 if found_name:
                     matched_movie_name = found_name
                     label_name = f"{th_target.name} [{th_target.code}]"

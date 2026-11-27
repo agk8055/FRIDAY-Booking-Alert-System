@@ -401,6 +401,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
         # Keep terminal output clean; only log errors
         pass
 
+    def _write_body(self, data: bytes) -> None:
+        try:
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            # Browser closed/cancelled the connection before reading the full response
+            pass
+
     def _send_json(self, payload: Any, status: int = HTTPStatus.OK) -> None:
         data = json.dumps(payload).encode("utf-8")
         self.send_response(status)
@@ -408,7 +415,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
-        self.wfile.write(data)
+        self._write_body(data)
 
     def _send_html(self, html_path: Path) -> None:
         if not html_path.exists():
@@ -419,7 +426,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
-        self.wfile.write(data)
+        self._write_body(data)
 
     def _send_file(self, file_path: Path, content_type: str) -> None:
         if not file_path.exists() or not file_path.is_file():
@@ -431,7 +438,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "public, max-age=3600")
         self.end_headers()
-        self.wfile.write(data)
+        self._write_body(data)
 
     def _read_json_body(self) -> Dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0"))
@@ -460,7 +467,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/plain; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(body)
+        self._write_body(body)
         return False
 
     def do_GET(self) -> None:
@@ -558,6 +565,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "Not found"}, status=HTTPStatus.NOT_FOUND)
 
 
+class _QuietThreadingHTTPServer(ThreadingHTTPServer):
+    """ThreadingHTTPServer that suppresses noisy client-disconnect socket errors."""
+
+    def handle_error(self, request: Any, client_address: Any) -> None:
+        import sys
+        _, exc, _ = sys.exc_info()
+        if isinstance(exc, (BrokenPipeError, ConnectionAbortedError, ConnectionResetError)):
+            return
+        super().handle_error(request, client_address)
+
+
 def start_dashboard_background(
     host: str = "127.0.0.1",
     port: int = 8765,
@@ -570,7 +588,7 @@ def start_dashboard_background(
         monitor_manager.attach_in_process(pause_event, wake_event)
 
     try:
-        server = ThreadingHTTPServer((host, port), DashboardHandler)
+        server = _QuietThreadingHTTPServer((host, port), DashboardHandler)
     except OSError:
         return None
 
@@ -585,7 +603,7 @@ def start_dashboard_background(
 
 
 def serve_dashboard(host: str = "127.0.0.1", port: int = 8765, open_browser: bool = True) -> None:
-    server = ThreadingHTTPServer((host, port), DashboardHandler)
+    server = _QuietThreadingHTTPServer((host, port), DashboardHandler)
     url = f"http://{host}:{port}"
     print("=" * 64)
     print("🎬  FRIDAY — Target & Monitor Control Dashboard")

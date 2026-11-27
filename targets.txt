@@ -20,4 +20,6 @@
 #   https://in.bookmyshow.com/movies/coimbatore/dune-part-three/ET00491771 | https://in.bookmyshow.com/cinemas/coimbatore/broadway-cinemas-coimbatore/BWCB, https://in.bookmyshow.com/cinemas/coimbatore/the-cinema-brookefields-mall-coimbatore/SPIB | @20261127
 # ==============================================================================
 
-https://in.bookmyshow.com/movies/kochi/avengers-doomsday/ET00439706 | https://in.bookmyshow.com/cinemas/KOCH/vanitha-cineplex-rgb-laser-4k-3d-atmos-edappally/buytickets/VMHE | @20261217
+https://in.bookmyshow.com/movies/kochi/avengers-doomsday/ET00439706 | https://in.bookmyshow.com/cinemas/KOCH/evm-dolby-cinema-fort-kochi/buytickets/EVMK | @20261217
+
+

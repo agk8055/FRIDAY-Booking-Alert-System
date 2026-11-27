@@ -197,6 +197,112 @@ class TestTheatreFirstChecking(unittest.TestCase):
 
         self.assertFalse(result.is_open)
 
+    def test_different_format_event_code_does_not_match_when_event_code_specified(self):
+        target_2d = TargetItem(
+            url="https://in.bookmyshow.com/movies/kochi/avengers-doomsday/ET00439706",
+            target_theatres=[
+                TheatreTarget(
+                    raw_input="https://in.bookmyshow.com/cinemas/kochi/evm-dolby-cinema-fort-kochi/buytickets/EVMK"
+                )
+            ],
+            target_date="20261217",
+        )
+        state = {
+            "venueShowtimesFunctionalApi": {
+                "queries": {
+                    "getShowtimesByVenue-EVMK-20261217": {
+                        "originalArgs": {"dateCode": "20261217"},
+                        "data": {
+                            "showDetailsTransformed": {
+                                "Event": [
+                                    {
+                                        "EventTitle": "Avengers: Doomsday",
+                                        "ChildEvents": [
+                                            {
+                                                "EventName": "Avengers: Doomsday (DOLBY CINEMA 2D) - English",
+                                                "EventCode": "ET00526329",
+                                                "EventImageCode": "avengers-doomsday-et00526329-1794903208",
+                                            }
+                                        ],
+                                    }
+                                ]
+                            }
+                        },
+                    }
+                }
+            }
+        }
+        html = f"<html><script>window.__INITIAL_STATE__ = {json.dumps(state)};</script></html>"
+        mock_session = MagicMock()
+        mock_session.get.return_value = MagicMock(
+            status_code=200,
+            text=html,
+            url="https://in.bookmyshow.com/cinemas/kochi/evm-dolby-cinema-fort-kochi/buytickets/EVMK/20261217",
+        )
+
+        with patch.object(self.checker, "_get_curl_session", return_value=mock_session):
+            result = self.checker.check_target(target_2d)
+
+        self.assertFalse(result.is_open)
+
+    def test_matches_across_format_event_codes_via_event_group_id(self):
+        target_movie_url = "https://in.bookmyshow.com/movies/kochi/avengers-doomsday/ET00439706"
+        theatre_url = "https://in.bookmyshow.com/cinemas/kochi/evm-dolby-cinema-fort-kochi/buytickets/EVMK/20261217"
+        target_dolby = TargetItem(
+            url=target_movie_url,
+            target_theatres=[TheatreTarget(raw_input=theatre_url)],
+        )
+        theatre_state = {
+            "venueShowtimesFunctionalApi": {
+                "queries": {
+                    "getShowtimesByVenue-EVMK-20261217": {
+                        "originalArgs": {"dateCode": "20261217"},
+                        "data": {
+                            "showDetailsTransformed": {
+                                "Event": [
+                                    {
+                                        "EventTitle": "Avengers: Doomsday",
+                                        "ChildEvents": [
+                                            {
+                                                "EventName": "Avengers: Doomsday (DOLBY CINEMA 2D) - English",
+                                                "EventCode": "ET00526329",
+                                                "EventGroup": "EG00437704",
+                                            }
+                                        ],
+                                    }
+                                ]
+                            }
+                        },
+                    }
+                }
+            }
+        }
+        movie_state = {
+            "synopsisStore": {
+                "synopsis": {
+                    "eventCode": "ET00439706",
+                    "eventGroupCode": "EG00437704",
+                    "eventName": "Avengers: Doomsday",
+                }
+            }
+        }
+        theatre_html = f"<html><script>window.__INITIAL_STATE__ = {json.dumps(theatre_state)};</script></html>"
+        movie_html = f"<html><script>window.__INITIAL_STATE__ = {json.dumps(movie_state)};</script></html>"
+
+        mock_session = MagicMock()
+        mock_session.get.side_effect = [
+            MagicMock(status_code=200, text=theatre_html, url=theatre_url),
+            MagicMock(status_code=200, text=movie_html, url=target_movie_url),
+        ]
+
+        with patch.object(self.checker, "_get_curl_session", return_value=mock_session):
+            result = self.checker.check_target(target_dolby)
+
+        self.assertTrue(result.is_open)
+        self.assertEqual(result.movie_name, "Avengers: Doomsday (DOLBY CINEMA 2D) - English")
+        self.assertIn("EVMK", result.matched_theatres[0])
+        self.assertEqual(self.checker._event_group_cache.get("ET00439706"), "EG00437704")
+
 
 if __name__ == "__main__":
     unittest.main()
