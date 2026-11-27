@@ -149,6 +149,22 @@ def monitor_loop(
         now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         print(f"\n[{now_str}] --- Cycle #{check_cycle}: Checking {len(targets)} Target(s) ---")
 
+        if not targets:
+            logger.info("⏸️ No active targets enabled. Skipping check cycle.")
+            if run_once:
+                print("\nCompleted single check cycle. Exiting.")
+                cleanup_driver()
+                break
+            sleep_duration = calculate_sleep_interval(interval)
+            logger.info(f"Cycle #{check_cycle} done. Sleeping for {sleep_duration} seconds...")
+            try:
+                time.sleep(sleep_duration)
+            except KeyboardInterrupt:
+                cleanup_driver()
+                print("\nMonitoring stopped by user.")
+                break
+            continue
+
         # Periodically recycle active browser session to release accumulated memory if Chrome was used
         if _ACTIVE_DRIVER is not None and check_cycle > 1 and (check_cycle % config.recycle_browser_cycles == 0):
             logger.info(f"♻️ Recycling active Chrome session (Cycle #{check_cycle}) to maintain clean memory...")
@@ -254,7 +270,6 @@ def main():
     args = parser.parse_args()
 
     if args.test:
-        from .notifier import dispatch_alerts
         # Run test alert
         target = config.targets[0] if config.targets else None
         city = target.city if target else "Coimbatore"

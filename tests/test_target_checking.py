@@ -61,6 +61,16 @@ class TestTheatreTargetParsing(unittest.TestCase):
             "https://in.bookmyshow.com/cinemas/coimbatore/broadway-cinemas-coimbatore/buytickets/BWCB/20261127",
         )
 
+    def test_load_targets_returns_empty_when_all_disabled_or_empty(self):
+        content = "# [DISABLED] https://in.bookmyshow.com/movies/kochi/avengers-doomsday/ET00439706\n"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_root = Path(tmpdir)
+            (tmp_root / "targets.txt").write_text(content, encoding="utf-8")
+            with patch("config.PROJECT_ROOT", tmp_root), patch.dict("os.environ", {}, clear=False):
+                targets = load_targets_from_file_or_env()
+
+        self.assertEqual(targets, [])
+
 
 class TestTheatreFirstChecking(unittest.TestCase):
     def setUp(self):

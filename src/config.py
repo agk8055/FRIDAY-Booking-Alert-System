@@ -225,11 +225,6 @@ def load_targets_from_file_or_env() -> List[TargetItem]:
         except Exception as e:
             print(f"Notice: Failed to read {targets_file}: {e}")
 
-    # Fallback to .env if targets.txt had no active URLs
-    if not targets:
-        env_url = os.getenv("BMS_TARGET_URL", "https://in.bookmyshow.com/movies/coimbatore/dune-part-three/ET00491771")
-        targets.append(TargetItem(url=env_url))
-
     return targets
 
 

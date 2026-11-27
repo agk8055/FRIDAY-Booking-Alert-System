@@ -73,6 +73,8 @@ DEFAULT_HEADER = """# ==========================================================
 """
 
 DISABLED_PREFIX = "# [DISABLED] "
+_HEALTH_BODY = b'{"ok":true}'
+_HEALTH_CONTENT_LENGTH = str(len(_HEALTH_BODY))
 
 
 class MonitorManager:
@@ -264,7 +266,8 @@ def parse_target_line(line: str, enabled: bool = True) -> Optional[Dict[str, Any
                 theatres = parse_theatres(",".join(parts[1:]))
 
     url_clean = url_part.strip()
-    if not url_clean.startswith("http"):
+    parsed_url = urllib.parse.urlparse(url_clean)
+    if parsed_url.scheme not in ("http", "https") or not parsed_url.netloc:
         return None
 
     item = TargetItem(url=url_clean, target_theatres=theatres, target_date=target_date)
@@ -302,8 +305,9 @@ def parse_target_line(line: str, enabled: bool = True) -> Optional[Dict[str, Any
 
 def serialize_target_dict(target: Dict[str, Any]) -> str:
     url = (target.get("url") or "").strip()
-    if not url.startswith("http"):
-        raise ValueError("Target URL must start with http:// or https://")
+    parsed_url = urllib.parse.urlparse(url)
+    if parsed_url.scheme not in ("http", "https") or not parsed_url.netloc:
+        raise ValueError("Target URL must be a valid URL starting with http:// or https://")
 
     theatres_raw = (target.get("theatres_raw") or "").strip()
     target_date = re.sub(r"[^0-9]", "", (target.get("target_date") or "").strip())
@@ -401,6 +405,24 @@ class DashboardHandler(BaseHTTPRequestHandler):
         # Keep terminal output clean; only log errors
         pass
 
+    def address_string(self) -> str:
+        # Avoid reverse DNS lookups (socket.getfqdn) on every request
+        return self.client_address[0]
+
+    def _is_health_path(self) -> bool:
+        raw_path = self.path
+        return raw_path == "/health" or raw_path.startswith("/health?")
+
+    def _send_health(self, head_only: bool = False) -> None:
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", _HEALTH_CONTENT_LENGTH)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        if not head_only:
+            self._write_body(_HEALTH_BODY)
+
     def _write_body(self, data: bytes) -> None:
         try:
             self.wfile.write(data)
@@ -470,13 +492,25 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self._write_body(body)
         return False
 
+    def do_HEAD(self) -> None:
+        if self._is_health_path():
+            self._send_health(head_only=True)
+            return
+
+        if not self._check_auth():
+            return
+
+        self.send_response(HTTPStatus.NOT_FOUND)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def do_GET(self) -> None:
+        if self._is_health_path():
+            self._send_health(head_only=False)
+            return
+
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
-
-        if path == "/health":
-            self._send_json({"ok": True})
-            return
 
         if not self._check_auth():
             return
@@ -491,7 +525,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_json(monitor_manager.status())
         elif path == "/api/logs":
             qs = urllib.parse.parse_qs(parsed.query)
-            lines = int(qs.get("lines", ["150"])[0])
+            try:
+                lines = max(10, min(2000, int(qs.get("lines", ["150"])[0])))
+            except (TypeError, ValueError):
+                lines = 150
             self._send_json(
                 {
                     "monitor_log": read_tail(MONITOR_LOG_FILE, max_lines=lines),
@@ -556,8 +593,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         elif path == "/api/logs/clear":
             try:
-                Path(MONITOR_LOG_FILE).write_text("", encoding="utf-8")
-                self._send_json({"ok": True})
+                target_log = (body.get("target") or "monitor").strip().lower()
+                if target_log == "bookings":
+                    Path(BOOKINGS_LOG_FILE).write_text("", encoding="utf-8")
+                elif target_log == "monitor":
+                    Path(MONITOR_LOG_FILE).write_text("", encoding="utf-8")
+                else:
+                    self._send_json({"ok": False, "error": "Invalid log target."}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                self._send_json({"ok": True, "target": target_log})
             except Exception as exc:
                 self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
 
@@ -567,6 +611,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
 class _QuietThreadingHTTPServer(ThreadingHTTPServer):
     """ThreadingHTTPServer that suppresses noisy client-disconnect socket errors."""
+
+    daemon_threads = True
+    request_queue_size = 64
 
     def handle_error(self, request: Any, client_address: Any) -> None:
         import sys
