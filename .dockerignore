@@ -1,0 +1,16 @@
+.git/
+.env
+.env.*
+!.env.example
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+logs/
+*.log
+booking_opened.txt
+.vscode/
+.idea/
+tests/

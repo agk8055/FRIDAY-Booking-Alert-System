@@ -239,6 +239,9 @@ def monitor_loop(
 def main():
     set_process_efficiency_priority()
 
+    default_dashboard_port = int(os.getenv("PORT", os.getenv("DASHBOARD_PORT", "8765")))
+    default_dashboard_host = os.getenv("DASHBOARD_HOST", "0.0.0.0" if os.getenv("PORT") else "127.0.0.1")
+
     parser = argparse.ArgumentParser(description="BookMyShow Multi-Movie/City Booking Monitor")
     parser.add_argument("--url", nargs="+", help="One or more BookMyShow URLs to monitor")
     parser.add_argument("--interval", type=int, default=config.check_interval, help="Check interval in seconds")
@@ -246,7 +249,8 @@ def main():
     parser.add_argument("--test", action="store_true", help="Test alert notifications without monitoring")
     parser.add_argument("--no-dashboard", action="store_true", help="Do not start the local web dashboard")
     parser.add_argument("--no-browser", action="store_true", help="Do not auto-open the dashboard in browser")
-    parser.add_argument("--dashboard-port", type=int, default=8765, help="Dashboard port (default: 8765)")
+    parser.add_argument("--dashboard-host", default=default_dashboard_host, help=f"Dashboard bind host (default: {default_dashboard_host})")
+    parser.add_argument("--dashboard-port", type=int, default=default_dashboard_port, help=f"Dashboard port (default: {default_dashboard_port})")
     args = parser.parse_args()
 
     if args.test:
@@ -283,15 +287,16 @@ def main():
 
             pause_event = threading.Event()
             wake_event = threading.Event()
+            open_browser = not args.no_browser and not os.getenv("RENDER") and not os.getenv("PORT")
             dashboard_server = start_dashboard_background(
-                host="127.0.0.1",
+                host=args.dashboard_host,
                 port=args.dashboard_port,
-                open_browser=not args.no_browser,
+                open_browser=open_browser,
                 pause_event=pause_event,
                 wake_event=wake_event,
             )
             if dashboard_server is not None:
-                logger.info(f"🌐 Dashboard live at http://127.0.0.1:{args.dashboard_port}")
+                logger.info(f"🌐 Dashboard live at http://{args.dashboard_host}:{args.dashboard_port}")
             else:
                 logger.info(f"Notice: Dashboard port {args.dashboard_port} already in use; continuing monitor only.")
         except Exception as exc:

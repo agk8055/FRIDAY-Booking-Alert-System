@@ -1,6 +1,8 @@
 import base64
 import logging
+import os
 import subprocess
+import sys
 import threading
 import time
 import webbrowser
@@ -20,6 +22,9 @@ logger = logging.getLogger("BMSMonitor")
 
 def play_sound_alert(repeat_count: int = 5):
     """Plays an audible alarm through system speakers on Windows."""
+    if sys.platform != "win32":
+        return
+
     def _beep():
         try:
             import winsound
@@ -36,6 +41,9 @@ def play_sound_alert(repeat_count: int = 5):
 
 def send_windows_toast(title: str, message: str):
     """Displays a native Windows Desktop Toast Notification."""
+    if sys.platform != "win32":
+        return
+
     try:
         safe_title = title.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("'", "''")
         safe_msg = message.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("'", "''")
@@ -65,6 +73,8 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
 
 def open_in_browser(url: str):
     """Automatically opens the booking URL in user's default browser."""
+    if os.getenv("RENDER") or (sys.platform.startswith("linux") and not os.getenv("DISPLAY")):
+        return
     try:
         webbrowser.open(url)
         logger.info(f"Opened URL in default browser: {url}")

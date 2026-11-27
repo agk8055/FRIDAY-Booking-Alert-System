@@ -1,5 +1,6 @@
 import os
 import re
+import shutil
 import urllib.parse
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -8,10 +9,18 @@ from dotenv import load_dotenv
 
 # Base paths
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-LOGS_DIR = PROJECT_ROOT / "logs"
+DATA_DIR = Path(os.getenv("DATA_DIR")).resolve() if os.getenv("DATA_DIR") else PROJECT_ROOT
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+LOGS_DIR = DATA_DIR / "logs"
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
 BOOKINGS_LOG_FILE = str(LOGS_DIR / "booking_opened.txt")
 MONITOR_LOG_FILE = str(LOGS_DIR / "monitor.log")
+
+TARGETS_FILE = DATA_DIR / "targets.txt"
+if DATA_DIR != PROJECT_ROOT and not TARGETS_FILE.exists():
+    _seed_targets = PROJECT_ROOT / "targets.txt"
+    if _seed_targets.exists():
+        shutil.copy2(_seed_targets, TARGETS_FILE)
 
 # Load environment variables from .env in PROJECT_ROOT
 load_dotenv(PROJECT_ROOT / ".env")
@@ -173,7 +182,9 @@ class TargetItem:
 
 def load_targets_from_file_or_env() -> List[TargetItem]:
     targets = []
-    targets_file = PROJECT_ROOT / "targets.txt"
+    targets_file = (DATA_DIR / "targets.txt") if os.getenv("DATA_DIR") else (PROJECT_ROOT / "targets.txt")
+    if not targets_file.exists():
+        targets_file = PROJECT_ROOT / "targets.txt"
     if not targets_file.exists():
         targets_file = Path("targets.txt")
     

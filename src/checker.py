@@ -1,11 +1,13 @@
 import json
 import logging
+import os
 import re
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional
 from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 
@@ -455,11 +457,22 @@ class BMSChecker:
     def create_driver(self) -> webdriver.Chrome:
         """Initializes an ultra-lean, high-efficiency headless Chrome webdriver session."""
         options = Options()
-        if self.headless:
+        if self.headless or os.getenv("RENDER"):
             options.add_argument("--headless=new")
+
+        # Support custom Chromium/Chrome binary paths (e.g. Docker / Render)
+        chrome_bin = os.getenv("CHROME_BIN", "").strip()
+        if not chrome_bin:
+            for candidate in ("/usr/bin/chromium", "/usr/bin/chromium-browser", "/usr/bin/google-chrome"):
+                if os.path.exists(candidate):
+                    chrome_bin = candidate
+                    break
+        if chrome_bin:
+            options.binary_location = chrome_bin
 
         # Core optimization flags
         options.add_argument("--disable-gpu")
+        options.add_argument("--disable-software-rasterizer")
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--disable-blink-features=AutomationControlled")
@@ -501,7 +514,14 @@ class BMSChecker:
         options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
         options.add_experimental_option("useAutomationExtension", False)
 
-        driver = webdriver.Chrome(options=options)
+        chromedriver_path = os.getenv("CHROMEDRIVER_PATH", "").strip()
+        if not chromedriver_path and os.path.exists("/usr/bin/chromedriver"):
+            chromedriver_path = "/usr/bin/chromedriver"
+
+        if chromedriver_path:
+            driver = webdriver.Chrome(service=Service(executable_path=chromedriver_path), options=options)
+        else:
+            driver = webdriver.Chrome(options=options)
         driver.set_page_load_timeout(20)
         return driver
 
@@ -528,14 +548,14 @@ class BMSChecker:
                 logger.debug(f"curl_cffi attempt failed for {target.url}: {e}; engaging Chrome fallback...")
 
         # Chrome Fallback Execution
-        active_driver = driver
-        if active_driver is None and driver_factory is not None:
-            active_driver = driver_factory()
-
-        if active_driver is None:
-            active_driver = self.create_driver()
-
         try:
+            active_driver = driver
+            if active_driver is None and driver_factory is not None:
+                active_driver = driver_factory()
+
+            if active_driver is None:
+                active_driver = self.create_driver()
+
             if target.is_cinema:
                 return self._check_cinema_page(target, active_driver)
             return self._check_movie_page(target, active_driver)

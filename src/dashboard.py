@@ -6,7 +6,9 @@ Local Web Dashboard Server & API.
 
 import argparse
 import atexit
+import base64
 import datetime
+import hmac
 import json
 import os
 import re
@@ -25,6 +27,7 @@ try:
         BOOKINGS_LOG_FILE,
         MONITOR_LOG_FILE,
         PROJECT_ROOT,
+        TARGETS_FILE,
         TargetItem,
         TheatreTarget,
         config,
@@ -35,13 +38,13 @@ except ImportError:
         BOOKINGS_LOG_FILE,
         MONITOR_LOG_FILE,
         PROJECT_ROOT,
+        TARGETS_FILE,
         TargetItem,
         TheatreTarget,
         config,
         parse_theatres,
     )
 
-TARGETS_FILE = PROJECT_ROOT / "targets.txt"
 ASSETS_DIR = PROJECT_ROOT / "assets"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 DASHBOARD_HTML = STATIC_DIR / "dashboard.html"
@@ -437,9 +440,39 @@ class DashboardHandler(BaseHTTPRequestHandler):
         raw = self.rfile.read(length).decode("utf-8")
         return json.loads(raw) if raw else {}
 
+    def _check_auth(self) -> bool:
+        expected_password = os.getenv("DASHBOARD_PASSWORD", "")
+        if not expected_password:
+            return True
+        expected_user = os.getenv("DASHBOARD_USERNAME", "admin") or "admin"
+        auth_header = self.headers.get("Authorization", "")
+        if auth_header.startswith("Basic "):
+            try:
+                decoded = base64.b64decode(auth_header[6:].strip()).decode("utf-8")
+                user, _, pwd = decoded.partition(":")
+                if hmac.compare_digest(user, expected_user) and hmac.compare_digest(pwd, expected_password):
+                    return True
+            except Exception:
+                pass
+        body = b"Unauthorized"
+        self.send_response(HTTPStatus.UNAUTHORIZED)
+        self.send_header("WWW-Authenticate", 'Basic realm="FRIDAY Dashboard"')
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+        return False
+
     def do_GET(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+
+        if path == "/health":
+            self._send_json({"ok": True})
+            return
+
+        if not self._check_auth():
+            return
 
         if path in ("/", "/index.html"):
             self._send_html(DASHBOARD_HTML)
@@ -462,6 +495,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "Not found"}, status=HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:
+        if not self._check_auth():
+            return
+
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
 
@@ -572,12 +608,15 @@ def serve_dashboard(host: str = "127.0.0.1", port: int = 8765, open_browser: boo
 
 
 def main() -> None:
+    default_port = int(os.getenv("PORT", os.getenv("DASHBOARD_PORT", "8765")))
+    default_host = os.getenv("DASHBOARD_HOST", "0.0.0.0" if os.getenv("PORT") else "127.0.0.1")
     parser = argparse.ArgumentParser(description="FRIDAY Local Web Dashboard")
-    parser.add_argument("--host", default="127.0.0.1", help="Bind host (default: 127.0.0.1)")
-    parser.add_argument("--port", type=int, default=8765, help="Port to listen on (default: 8765)")
+    parser.add_argument("--host", default=default_host, help=f"Bind host (default: {default_host})")
+    parser.add_argument("--port", type=int, default=default_port, help=f"Port to listen on (default: {default_port})")
     parser.add_argument("--no-open", action="store_true", help="Do not automatically open browser")
     args = parser.parse_args()
-    serve_dashboard(host=args.host, port=args.port, open_browser=not args.no_open)
+    open_browser = not args.no_open and not os.getenv("RENDER") and not os.getenv("PORT")
+    serve_dashboard(host=args.host, port=args.port, open_browser=open_browser)
 
 
 if __name__ == "__main__":
