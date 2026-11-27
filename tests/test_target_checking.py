@@ -304,5 +304,50 @@ class TestTheatreFirstChecking(unittest.TestCase):
         self.assertEqual(self.checker._event_group_cache.get("ET00439706"), "EG00437704")
 
 
+class TestCurlCffiFallbackAndCookies(unittest.TestCase):
+    def test_sync_cookies_from_driver_and_cooldown(self):
+        checker = BMSChecker(headless=True)
+        target = TargetItem(url="https://in.bookmyshow.com/movies/coimbatore/dune-part-three/ET00491771")
+
+        mock_session = MagicMock()
+        mock_session.get.return_value = MagicMock(status_code=403, text="Forbidden")
+
+        mock_driver = MagicMock()
+        mock_driver.get_cookies.return_value = [
+            {"name": "cf_clearance", "value": "abc123", "domain": ".bookmyshow.com", "path": "/"}
+        ]
+        fake_result = MagicMock(is_open=False, movie_name="Dune Part Three")
+
+        with patch.object(checker, "_get_curl_session", return_value=mock_session), \
+             patch.object(checker, "_check_movie_page", return_value=fake_result):
+            for _ in range(3):
+                checker.check_target(target, driver=mock_driver)
+
+            # Cookie from Chrome fallback should be synced to curl_cffi session
+            mock_session.cookies.set.assert_called_with(
+                "cf_clearance", "abc123", domain=".bookmyshow.com", path="/"
+            )
+            self.assertEqual(mock_session.get.call_count, 3)
+            self.assertEqual(checker._curl_cooldown_remaining, 10)
+
+            # 4th call should skip curl_cffi during cooldown
+            checker.check_target(target, driver=mock_driver)
+            self.assertEqual(mock_session.get.call_count, 3)
+            self.assertEqual(checker._curl_cooldown_remaining, 9)
+
+    def test_use_curl_cffi_false_skips_curl(self):
+        with patch.dict("os.environ", {"USE_CURL_CFFI": "false"}):
+            checker = BMSChecker(headless=True)
+        target = TargetItem(url="https://in.bookmyshow.com/movies/coimbatore/dune-part-three/ET00491771")
+        mock_driver = MagicMock()
+        fake_result = MagicMock(is_open=False, movie_name="Dune Part Three")
+
+        with patch.object(checker, "_get_curl_session") as mock_get_sess, \
+             patch.object(checker, "_check_movie_page", return_value=fake_result):
+            checker.check_target(target, driver=mock_driver)
+
+        mock_get_sess.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

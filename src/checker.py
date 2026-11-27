@@ -40,17 +40,47 @@ class CheckResult:
 
 
 class BMSChecker:
+    _CURL_HEADERS = {
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://in.bookmyshow.com/",
+        "Upgrade-Insecure-Requests": "1",
+    }
+
     def __init__(self, headless: bool = None):
         self.headless = headless if headless is not None else config.headless
         self._curl_session = None
         self._event_group_cache: dict[str, str] = {}
+        self._last_curl_reason: str = ""
+        self._curl_consecutive_failures: int = 0
+        self._curl_cooldown_remaining: int = 0
+        self._curl_enabled: bool = os.getenv("USE_CURL_CFFI", "true").strip().lower() in ("1", "true", "yes", "on")
 
     def _get_curl_session(self):
-        if not CURL_CFFI_AVAILABLE:
+        if not CURL_CFFI_AVAILABLE or not self._curl_enabled:
             return None
         if self._curl_session is None:
-            self._curl_session = curl_requests.Session(impersonate="chrome124")
+            impersonate = os.getenv("CURL_IMPERSONATE", "chrome").strip() or "chrome"
+            self._curl_session = curl_requests.Session(impersonate=impersonate)
         return self._curl_session
+
+    def _sync_cookies_from_driver(self, driver: webdriver.Chrome) -> None:
+        """Copies cookies (e.g. WAF clearance cookies) from Chrome into the curl_cffi session."""
+        if not self._curl_enabled or driver is None:
+            return
+        session = self._get_curl_session()
+        if session is None:
+            return
+        try:
+            for cookie in driver.get_cookies():
+                name = cookie.get("name")
+                value = cookie.get("value")
+                domain = cookie.get("domain") or "in.bookmyshow.com"
+                path = cookie.get("path") or "/"
+                if name and value is not None:
+                    session.cookies.set(name, value, domain=domain, path=path)
+        except Exception as e:
+            logger.debug(f"Could not sync cookies from Chrome to curl_cffi: {e}")
 
     def _extract_initial_state_from_html(self, html: str) -> dict:
         """Extracts window.__INITIAL_STATE__ JSON directly from HTML without launching a browser."""
@@ -75,14 +105,10 @@ class BMSChecker:
         return {}
 
     def _check_cinema_page_curl(self, target: TargetItem, session) -> Optional[CheckResult]:
-        headers = {
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        }
         try:
-            resp = session.get(target.url, headers=headers, timeout=10)
+            resp = session.get(target.url, headers=self._CURL_HEADERS, timeout=10)
             if resp.status_code != 200:
+                self._last_curl_reason = f"HTTP {resp.status_code}"
                 return None
             soup = BeautifulSoup(resp.text, "html.parser")
             cinema_title = soup.title.text.split("|")[0].strip() if soup.title else target.slug or "Cinema"
@@ -102,7 +128,8 @@ class BMSChecker:
                 theatres_found=[cinema_title],
                 details={"listed_movies": listed_movies, "engine": "curl_cffi"}
             )
-        except Exception:
+        except Exception as e:
+            self._last_curl_reason = str(e)
             return None
 
     def _derive_movie_name(self, target: TargetItem) -> str:
@@ -244,12 +271,7 @@ class BMSChecker:
 
     def _check_target_theatres_curl(self, target: TargetItem, session) -> Optional[CheckResult]:
         """Checks target theatre URLs directly via curl_cffi, bypassing the movie page gate."""
-        headers = {
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Referer": "https://in.bookmyshow.com/",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        }
+        headers = self._CURL_HEADERS
         cache_key = target.event_code or target.url
         if not target.event_group_code and cache_key in self._event_group_cache:
             target.event_group_code = self._event_group_cache[cache_key]
@@ -265,6 +287,7 @@ class BMSChecker:
                 continue
             resp = session.get(th_target.url, headers=headers, timeout=10)
             if resp.status_code != 200:
+                self._last_curl_reason = f"HTTP {resp.status_code} on {th_target.code or th_target.url}"
                 logger.debug(f"curl_cffi returned HTTP {resp.status_code} for theatre URL {th_target.url}")
                 return None
 
@@ -329,15 +352,11 @@ class BMSChecker:
         if target.has_theatre_urls:
             return self._check_target_theatres_curl(target, session)
 
-        headers = {
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Referer": "https://in.bookmyshow.com/",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        }
+        headers = self._CURL_HEADERS
         try:
             resp = session.get(target.url, headers=headers, timeout=10)
             if resp.status_code != 200:
+                self._last_curl_reason = f"HTTP {resp.status_code}"
                 logger.debug(f"curl_cffi returned HTTP {resp.status_code} for {target.url}")
                 return None
 
@@ -348,6 +367,7 @@ class BMSChecker:
 
             movie_name = syn.get("eventName")
             if not movie_name:
+                self._last_curl_reason = "no __INITIAL_STATE__/eventName (likely JS challenge)"
                 return None
 
             release_date = syn.get("releaseDate") or analytics.get("eventReleaseDate", "")
@@ -499,6 +519,7 @@ class BMSChecker:
                 }
             )
         except Exception as e:
+            self._last_curl_reason = str(e)
             logger.debug(f"curl_cffi execution error on {target.url}: {e}")
             return None
 
@@ -580,20 +601,40 @@ class BMSChecker:
         driver_factory: Optional[Callable[[], webdriver.Chrome]] = None
     ) -> CheckResult:
         """Inspects a specific BookMyShow Target URL using curl_cffi first, with seamless Chrome fallback."""
-        if CURL_CFFI_AVAILABLE:
-            try:
-                session = self._get_curl_session()
-                result = None
-                if target.is_cinema:
-                    result = self._check_cinema_page_curl(target, session)
-                else:
-                    result = self._check_movie_page_curl(target, session)
+        if CURL_CFFI_AVAILABLE and self._curl_enabled:
+            if self._curl_cooldown_remaining > 0:
+                self._curl_cooldown_remaining -= 1
+            else:
+                self._last_curl_reason = ""
+                try:
+                    session = self._get_curl_session()
+                    if session is not None:
+                        if target.is_cinema:
+                            result = self._check_cinema_page_curl(target, session)
+                        else:
+                            result = self._check_movie_page_curl(target, session)
 
-                if result is not None:
-                    return result
-                logger.info(f"🔄 curl_cffi challenge/unsupported format for {target.slug or target.url}; engaging Chrome fallback...")
-            except Exception as e:
-                logger.debug(f"curl_cffi attempt failed for {target.url}: {e}; engaging Chrome fallback...")
+                        if result is not None:
+                            self._curl_consecutive_failures = 0
+                            return result
+
+                        self._curl_consecutive_failures += 1
+                        reason = self._last_curl_reason or "challenge/unsupported format"
+                        logger.info(
+                            f"🔄 curl_cffi failed ({reason}) for {target.slug or target.url}; engaging Chrome fallback..."
+                        )
+                except Exception as e:
+                    self._curl_consecutive_failures += 1
+                    logger.info(
+                        f"🔄 curl_cffi error ({e}) for {target.slug or target.url}; engaging Chrome fallback..."
+                    )
+
+                if self._curl_consecutive_failures >= 3:
+                    self._curl_cooldown_remaining = 10
+                    self._curl_consecutive_failures = 0
+                    logger.info(
+                        "⏭️ curl_cffi failed 3 times consecutively; pausing curl_cffi for 10 checks and using Chrome directly."
+                    )
 
         # Chrome Fallback Execution
         try:
@@ -605,8 +646,12 @@ class BMSChecker:
                 active_driver = self.create_driver()
 
             if target.is_cinema:
-                return self._check_cinema_page(target, active_driver)
-            return self._check_movie_page(target, active_driver)
+                result = self._check_cinema_page(target, active_driver)
+            else:
+                result = self._check_movie_page(target, active_driver)
+
+            self._sync_cookies_from_driver(active_driver)
+            return result
         except Exception as e:
             logger.error(f"Error checking {target.url}: {e}")
             return CheckResult(
