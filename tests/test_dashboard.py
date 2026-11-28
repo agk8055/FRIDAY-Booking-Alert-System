@@ -130,8 +130,6 @@ class TestDashboardServerAndAPI(unittest.TestCase):
         for marker in [
             "startMonitor()",
             "stopMonitor()",
-            "checkOnce()",
-            "testAlert()",
             "openAddModal()",
             "openRawModal()",
             "saveTargetForm()",
@@ -146,6 +144,10 @@ class TestDashboardServerAndAPI(unittest.TestCase):
             "removeModalTheatreRow(",
         ]:
             self.assertIn(marker, html)
+        self.assertNotIn("btnOnce", html)
+        self.assertNotIn("btnTestAlert", html)
+        self.assertNotIn("checkOnce(", html)
+        self.assertNotIn("testAlert(", html)
 
         status_img, ctype_img, raw_img = self._request("GET", "/assets/banner.png")
         self.assertEqual(status_img, 200)

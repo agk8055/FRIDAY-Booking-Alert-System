@@ -40,12 +40,26 @@ class CheckResult:
 
 
 class BMSChecker:
+    _DEFAULT_IMPERSONATE = "chrome136"
     _CURL_HEADERS = {
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
         "Referer": "https://in.bookmyshow.com/",
         "Upgrade-Insecure-Requests": "1",
     }
+
+    @classmethod
+    def _resolve_impersonate(cls) -> str:
+        return os.getenv("CURL_IMPERSONATE", cls._DEFAULT_IMPERSONATE).strip() or cls._DEFAULT_IMPERSONATE
+
+    @staticmethod
+    def _derive_chrome_user_agent(impersonate: str) -> str:
+        match = re.search(r"chrome(\d+)", impersonate or "")
+        major = match.group(1) if match else "136"
+        return (
+            f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            f"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{major}.0.0.0 Safari/537.36"
+        )
 
     def __init__(self, headless: bool = None):
         self.headless = headless if headless is not None else config.headless
@@ -55,22 +69,35 @@ class BMSChecker:
         self._curl_consecutive_failures: int = 0
         self._curl_cooldown_remaining: int = 0
         self._curl_enabled: bool = os.getenv("USE_CURL_CFFI", "true").strip().lower() in ("1", "true", "yes", "on")
+        self._synced_user_agent: str = ""
+
+    def _get_curl_headers(self) -> dict:
+        headers = dict(self._CURL_HEADERS)
+        if self._synced_user_agent:
+            headers["User-Agent"] = self._synced_user_agent
+        return headers
 
     def _get_curl_session(self):
         if not CURL_CFFI_AVAILABLE or not self._curl_enabled:
             return None
         if self._curl_session is None:
-            impersonate = os.getenv("CURL_IMPERSONATE", "chrome").strip() or "chrome"
+            impersonate = self._resolve_impersonate()
             self._curl_session = curl_requests.Session(impersonate=impersonate)
         return self._curl_session
 
     def _sync_cookies_from_driver(self, driver: webdriver.Chrome) -> None:
-        """Copies cookies (e.g. WAF clearance cookies) from Chrome into the curl_cffi session."""
+        """Copies cookies and User-Agent from Chrome into the curl_cffi session."""
         if not self._curl_enabled or driver is None:
             return
         session = self._get_curl_session()
         if session is None:
             return
+        try:
+            ua = driver.execute_script("return navigator.userAgent;")
+            if isinstance(ua, str) and ua.strip():
+                self._synced_user_agent = ua.strip()
+        except Exception as e:
+            logger.debug(f"Could not sync User-Agent from Chrome to curl_cffi: {e}")
         try:
             for cookie in driver.get_cookies():
                 name = cookie.get("name")
@@ -106,7 +133,7 @@ class BMSChecker:
 
     def _check_cinema_page_curl(self, target: TargetItem, session) -> Optional[CheckResult]:
         try:
-            resp = session.get(target.url, headers=self._CURL_HEADERS, timeout=10)
+            resp = session.get(target.url, headers=self._get_curl_headers(), timeout=10)
             if resp.status_code != 200:
                 self._last_curl_reason = f"HTTP {resp.status_code}"
                 return None
@@ -271,7 +298,7 @@ class BMSChecker:
 
     def _check_target_theatres_curl(self, target: TargetItem, session) -> Optional[CheckResult]:
         """Checks target theatre URLs directly via curl_cffi, bypassing the movie page gate."""
-        headers = self._CURL_HEADERS
+        headers = self._get_curl_headers()
         cache_key = target.event_code or target.url
         if not target.event_group_code and cache_key in self._event_group_cache:
             target.event_group_code = self._event_group_cache[cache_key]
@@ -352,7 +379,7 @@ class BMSChecker:
         if target.has_theatre_urls:
             return self._check_target_theatres_curl(target, session)
 
-        headers = self._CURL_HEADERS
+        headers = self._get_curl_headers()
         try:
             resp = session.get(target.url, headers=headers, timeout=10)
             if resp.status_code != 200:
@@ -577,9 +604,8 @@ class BMSChecker:
         }
         options.add_experimental_option("prefs", prefs)
 
-        options.add_argument(
-            "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-        )
+        user_agent = self._derive_chrome_user_agent(self._resolve_impersonate())
+        options.add_argument(f"user-agent={user_agent}")
         options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
         options.add_experimental_option("useAutomationExtension", False)
 

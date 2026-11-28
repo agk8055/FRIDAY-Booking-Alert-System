@@ -30,14 +30,6 @@
           <svg class="icon" viewBox="0 0 24 24"><rect x="6" y="5" width="4" height="14"></rect><rect x="14" y="5" width="4" height="14"></rect></svg>
           <span>Pause Monitor</span>
         </button>
-        <button id="btnOnce" type="button" onclick="checkOnce()">
-          <svg class="icon" id="onceIcon" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
-          <span id="onceLabel">Check Once</span>
-        </button>
-        <button id="btnTestAlert" type="button" onclick="testAlert()">
-          <svg class="icon" viewBox="0 0 24 24"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path><path d="M13.73 21a2 2 0 0 1-3.46 0"></path></svg>
-          <span>Test Alert</span>
-        </button>
       </div>
 
       <div class="topbar-right">
@@ -302,7 +294,6 @@
     let logsData = { monitor_log: "", bookings_log: "" };
     let renderedBookings = [];
     let previewTimer = null;
-    let wasOnceRunning = false;
     let statusTimer = null;
     let logsTimer = null;
     let confirmCallback = null;
@@ -1108,9 +1099,6 @@
       const txt = document.getElementById("statusText");
       const btnStart = document.getElementById("btnStart");
       const btnStop = document.getElementById("btnStop");
-      const btnOnce = document.getElementById("btnOnce");
-      const onceIcon = document.getElementById("onceIcon");
-      const onceLabel = document.getElementById("onceLabel");
 
       try {
         const s = await api("/api/monitor/status");
@@ -1123,14 +1111,6 @@
           btnStop.style.display = "inline-flex";
           document.getElementById("engineStateLabel").textContent = "Live";
           document.getElementById("uptimeLabel").textContent = s.started_at ? `Since ${formatStartedAt(s.started_at)}` : "Running";
-        } else if (s.once_running) {
-          pill.className = "status-pill checking";
-          dot.className = "dot checking";
-          txt.textContent = "Checking...";
-          btnStart.style.display = "inline-flex";
-          btnStop.style.display = "none";
-          document.getElementById("engineStateLabel").textContent = "Single Check";
-          document.getElementById("uptimeLabel").textContent = "Active";
         } else {
           pill.className = "status-pill";
           dot.className = "dot";
@@ -1139,21 +1119,6 @@
           btnStop.style.display = "none";
           document.getElementById("engineStateLabel").textContent = "Paused";
           document.getElementById("uptimeLabel").textContent = "Standby";
-        }
-
-        if (s.once_running) {
-          btnOnce.disabled = true;
-          onceIcon.classList.add("spin");
-          onceLabel.textContent = "Checking...";
-          wasOnceRunning = true;
-        } else {
-          btnOnce.disabled = false;
-          onceIcon.classList.remove("spin");
-          onceLabel.textContent = "Check Once";
-          if (wasOnceRunning) {
-            wasOnceRunning = false;
-            loadLogs();
-          }
         }
 
         document.getElementById("intervalLabel").textContent = s.check_interval ?? "—";
@@ -1216,35 +1181,6 @@
         showToast(err.message || "Failed to pause monitor", "error");
       } finally {
         btn.disabled = false;
-      }
-    }
-
-    async function checkOnce() {
-      const btn = document.getElementById("btnOnce");
-      btn.disabled = true;
-      try {
-        const res = await api("/api/monitor/check-once", "POST", {});
-        showToast(res.message || res.error || "Single check started", res.ok ? "info" : "error");
-        await loadStatus();
-        scheduleNextStatusPoll(1000);
-        setTimeout(loadLogs, 1200);
-      } catch (err) {
-        showToast(err.message || "Failed to run single check", "error");
-        btn.disabled = false;
-      }
-    }
-
-    async function testAlert() {
-      const btn = document.getElementById("btnTestAlert");
-      btn.disabled = true;
-      try {
-        const res = await api("/api/monitor/test-alert", "POST", {});
-        showToast(res.message || "Test alert dispatched", res.ok ? "success" : "error");
-        setTimeout(loadLogs, 1200);
-      } catch (err) {
-        showToast(err.message || "Failed to send test alert", "error");
-      } finally {
-        setTimeout(() => { btn.disabled = false; }, 600);
       }
     }
 
@@ -1376,7 +1312,7 @@
         const view = document.getElementById("logView");
         const raw = logsData.monitor_log || "";
         if (!raw.trim()) {
-          view.innerHTML = `<div style="color:var(--muted); padding:14px; text-align:center;">No monitor log entries yet. Click <strong>Start Monitor</strong> or <strong>Check Once</strong> to begin.</div>`;
+          view.innerHTML = `<div style="color:var(--muted); padding:14px; text-align:center;">No monitor log entries yet. Click <strong>Start Monitor</strong> to begin.</div>`;
           return;
         }
         let lines = raw.split(/\r?\n/).filter(l => l.length > 0);
@@ -1479,9 +1415,8 @@
     function scheduleNextStatusPoll(delayMs = 3000) {
       clearTimeout(statusTimer);
       statusTimer = setTimeout(async () => {
-        const s = await loadStatus();
-        const nextDelay = (s && s.once_running) ? 1000 : 3000;
-        scheduleNextStatusPoll(nextDelay);
+        await loadStatus();
+        scheduleNextStatusPoll(3000);
       }, delayMs);
     }
 

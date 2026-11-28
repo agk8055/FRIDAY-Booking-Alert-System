@@ -64,7 +64,6 @@ class MonitorManager:
         self._lock = threading.Lock()
         self._process: Optional[subprocess.Popen] = None
         self._started_at: Optional[str] = None
-        self._once_process: Optional[subprocess.Popen] = None
         # In-process hooks when dashboard is started directly by monitor.py
         self._in_process = False
         self._in_process_running = False
@@ -108,15 +107,10 @@ class MonitorManager:
                     self._started_at = None
                 pid = self._process.pid if running and self._process else None
 
-            once_running = self._once_process is not None and self._once_process.poll() is None
-            if not once_running:
-                self._once_process = None
-
             return {
                 "running": running,
                 "pid": pid,
                 "started_at": self._started_at if running else None,
-                "once_running": once_running,
                 "check_interval": config.check_interval,
                 "adaptive_polling": config.adaptive_polling,
                 "eco_priority": config.eco_priority,
@@ -187,32 +181,6 @@ class MonitorManager:
                 self._started_at = None
 
             return {"ok": True, "message": f"Monitor (PID {pid}) stopped."}
-
-    def check_once(self) -> Dict[str, Any]:
-        with self._lock:
-            if self._once_process is not None and self._once_process.poll() is None:
-                return {"ok": False, "error": "A single check is already in progress."}
-
-            cmd = [sys.executable, str(PROJECT_ROOT / "run.py"), "--once", "--no-dashboard"]
-            self._once_process = subprocess.Popen(
-                cmd,
-                cwd=str(PROJECT_ROOT),
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                creationflags=self._creation_flags(),
-            )
-            return {"ok": True, "message": "Single check started. Watch the live log for results."}
-
-    def test_alert(self) -> Dict[str, Any]:
-        cmd = [sys.executable, str(PROJECT_ROOT / "run.py"), "--test", "--no-dashboard"]
-        subprocess.Popen(
-            cmd,
-            cwd=str(PROJECT_ROOT),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            creationflags=self._creation_flags(),
-        )
-        return {"ok": True, "message": "Test alert dispatched across enabled channels."}
 
     def set_check_interval(self, seconds: Any) -> Dict[str, Any]:
         try:
@@ -647,12 +615,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         elif path == "/api/monitor/stop":
             self._send_json(monitor_manager.stop())
-
-        elif path == "/api/monitor/check-once":
-            self._send_json(monitor_manager.check_once())
-
-        elif path == "/api/monitor/test-alert":
-            self._send_json(monitor_manager.test_alert())
 
         elif path == "/api/monitor/interval":
             raw_val = body.get("check_interval", body.get("interval"))

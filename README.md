@@ -143,7 +143,7 @@ FRIDAY ships with a ready-to-use [Dockerfile](Dockerfile) and Render Blueprint (
 - **Local PC alerts are disabled in cloud mode:** `SOUND_ALERT`, `WINDOWS_TOAST`, and `OPEN_BROWSER_ON_OPEN` are set to `false` in [render.yaml](render.yaml) and [Dockerfile](Dockerfile). Configure **Telegram**, **Discord**, **Email**, or a **Custom Webhook** to receive alerts.
 - **Health Check:** The `/health` endpoint is unauthenticated so Render can probe service health even when `DASHBOARD_PASSWORD` is enabled.
 - **Free Plan Spin-Down & Ephemeral Storage:**
-  - Render's `free` web service spins down after 15 minutes without inbound HTTP traffic. To keep 24/7 monitoring active on the free tier, point an external uptime monitor (e.g., UptimeRobot or cron-job.org) at `https://<your-service>.onrender.com/health` every 5–10 minutes, or upgrade to a paid instance.
+  - Render's `free` web service spins down after 15 minutes without inbound HTTP traffic; upgrade to a paid instance for uninterrupted 24/7 monitoring.
   - Free instances use ephemeral storage, so changes made to [targets.json](targets.json) via the web dashboard will reset on redeploy/restart. Either commit your targets to [targets.json](targets.json) before deploying, or attach a Render Persistent Disk (paid plans) mounted at `/data` and set `DATA_DIR=/data`.
 
 ---

@@ -375,6 +375,38 @@ class TestCurlCffiFallbackAndCookies(unittest.TestCase):
 
         mock_get_sess.assert_not_called()
 
+    def test_impersonate_and_user_agent_alignment(self):
+        with patch.dict("os.environ", {"CURL_IMPERSONATE": "chrome124"}):
+            self.assertEqual(BMSChecker._resolve_impersonate(), "chrome124")
+            self.assertIn(
+                "Chrome/124.0.0.0",
+                BMSChecker._derive_chrome_user_agent(BMSChecker._resolve_impersonate()),
+            )
+
+        with patch.dict("os.environ", {}, clear=False):
+            import os
+            os.environ.pop("CURL_IMPERSONATE", None)
+            self.assertEqual(BMSChecker._resolve_impersonate(), "chrome136")
+            self.assertIn(
+                "Chrome/136.0.0.0",
+                BMSChecker._derive_chrome_user_agent(BMSChecker._resolve_impersonate()),
+            )
+
+    def test_sync_cookies_also_syncs_user_agent_to_curl_headers(self):
+        checker = BMSChecker(headless=True)
+        mock_session = MagicMock()
+        mock_driver = MagicMock()
+        mock_driver.execute_script.return_value = "Mozilla/5.0 CustomChrome/136.0.0.0"
+        mock_driver.get_cookies.return_value = [
+            {"name": "cf_clearance", "value": "tok", "domain": ".bookmyshow.com", "path": "/"}
+        ]
+
+        with patch.object(checker, "_get_curl_session", return_value=mock_session):
+            checker._sync_cookies_from_driver(mock_driver)
+
+        headers = checker._get_curl_headers()
+        self.assertEqual(headers.get("User-Agent"), "Mozilla/5.0 CustomChrome/136.0.0.0")
+
 
 if __name__ == "__main__":
     unittest.main()
