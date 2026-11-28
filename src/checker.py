@@ -2,7 +2,10 @@ import json
 import logging
 import os
 import re
+import shutil
+import tempfile
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable, List, Optional
 from bs4 import BeautifulSoup
 from selenium import webdriver
@@ -10,6 +13,24 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
+
+try:
+    import undetected_chromedriver as uc
+    UC_AVAILABLE = True
+    # Guard uc.Chrome.__del__ against Windows Python 3.13 WinError 6 handle errors during shutdown
+    _orig_uc_del = getattr(uc.Chrome, "__del__", None)
+    if _orig_uc_del is not None:
+        def _safe_uc_del(self):
+            try:
+                _orig_uc_del(self)
+            except OSError:
+                pass
+            except Exception:
+                pass
+        uc.Chrome.__del__ = _safe_uc_del
+except ImportError:
+    UC_AVAILABLE = False
+    uc = None
 
 try:
     from curl_cffi import requests as curl_requests
@@ -594,20 +615,18 @@ class BMSChecker:
             logger.debug(f"curl_cffi execution error on {target.url}: {e}")
             return None
 
-    def create_driver(self) -> webdriver.Chrome:
-        """Initializes an ultra-lean, high-efficiency headless Chrome webdriver session."""
-        options = Options()
-        if self.headless or os.getenv("RENDER"):
+    def _configure_chrome_options(self, options, is_headless: bool, for_uc: bool = False) -> tuple[str, str]:
+        """Applies shared lean Chrome flags and returns (chrome_bin, chromedriver_path)."""
+        if is_headless and not for_uc:
             options.add_argument("--headless=new")
 
-        # Support custom Chromium/Chrome binary paths (e.g. Docker / Render)
         chrome_bin = os.getenv("CHROME_BIN", "").strip()
         if not chrome_bin:
             for candidate in ("/usr/bin/chromium", "/usr/bin/chromium-browser", "/usr/bin/google-chrome"):
                 if os.path.exists(candidate):
                     chrome_bin = candidate
                     break
-        if chrome_bin:
+        if chrome_bin and not for_uc:
             options.binary_location = chrome_bin
 
         # Core optimization flags
@@ -615,7 +634,8 @@ class BMSChecker:
         options.add_argument("--disable-software-rasterizer")
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--disable-blink-features=AutomationControlled")
+        if not for_uc:
+            options.add_argument("--disable-blink-features=AutomationControlled")
         options.add_argument("--window-size=1280,720")
         options.page_load_strategy = "eager"
 
@@ -652,12 +672,93 @@ class BMSChecker:
         user_agent = os.getenv("CHROME_USER_AGENT", "").strip()
         if user_agent:
             options.add_argument(f"user-agent={user_agent}")
-        options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
-        options.add_experimental_option("useAutomationExtension", False)
+
+        if not for_uc:
+            options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
+            options.add_experimental_option("useAutomationExtension", False)
 
         chromedriver_path = os.getenv("CHROMEDRIVER_PATH", "").strip()
         if not chromedriver_path and os.path.exists("/usr/bin/chromedriver"):
             chromedriver_path = "/usr/bin/chromedriver"
+
+        return chrome_bin, chromedriver_path
+
+    @staticmethod
+    def _find_cached_selenium_chromedriver() -> str:
+        """Finds a cached chromedriver binary from Selenium Manager if present."""
+        cache_root = Path.home() / ".cache" / "selenium" / "chromedriver"
+        if not cache_root.exists():
+            return ""
+        exe_name = "chromedriver.exe" if os.name == "nt" else "chromedriver"
+        candidates = sorted(cache_root.rglob(exe_name), key=lambda p: p.stat().st_mtime, reverse=True)
+        return str(candidates[0]) if candidates else ""
+
+    @staticmethod
+    def _copy_chromedriver_for_uc(source_path: str) -> str:
+        """Copies chromedriver to a writable temp path so undetected-chromedriver can patch it safely."""
+        ext = ".exe" if source_path.lower().endswith(".exe") else ""
+        dest_path = os.path.join(tempfile.gettempdir(), f"friday_uc_chromedriver{ext}")
+        origin_file = dest_path + ".origin"
+        recorded_origin = ""
+        if os.path.exists(origin_file):
+            try:
+                recorded_origin = Path(origin_file).read_text(encoding="utf-8").strip()
+            except Exception:
+                recorded_origin = ""
+        if not os.path.exists(dest_path) or os.path.getsize(dest_path) == 0 or recorded_origin != source_path:
+            shutil.copy2(source_path, dest_path)
+            if os.name != "nt":
+                os.chmod(dest_path, 0o755)
+            try:
+                Path(origin_file).write_text(source_path, encoding="utf-8")
+            except Exception:
+                pass
+        return dest_path
+
+    def create_driver(self) -> webdriver.Chrome:
+        """Initializes a stealth Chrome webdriver using undetected-chromedriver (headed when DISPLAY is available)."""
+        is_headless = bool(self.headless or (os.getenv("RENDER") and not os.getenv("DISPLAY")))
+        use_uc = UC_AVAILABLE and os.getenv("USE_UNDETECTED_CHROME", "true").strip().lower() in (
+            "1", "true", "yes", "on"
+        )
+
+        if use_uc:
+            try:
+                uc_options = uc.ChromeOptions()
+                chrome_bin, chromedriver_path = self._configure_chrome_options(
+                    uc_options, is_headless=is_headless, for_uc=True
+                )
+                uc_driver_path = self._copy_chromedriver_for_uc(chromedriver_path) if chromedriver_path else None
+                try:
+                    driver = uc.Chrome(
+                        options=uc_options,
+                        headless=is_headless,
+                        browser_executable_path=chrome_bin or None,
+                        driver_executable_path=uc_driver_path,
+                        use_subprocess=True,
+                    )
+                except Exception as first_err:
+                    cached = "" if uc_driver_path else self._find_cached_selenium_chromedriver()
+                    if not cached:
+                        raise first_err
+                    uc_options = uc.ChromeOptions()
+                    chrome_bin, _ = self._configure_chrome_options(
+                        uc_options, is_headless=is_headless, for_uc=True
+                    )
+                    driver = uc.Chrome(
+                        options=uc_options,
+                        headless=is_headless,
+                        browser_executable_path=chrome_bin or None,
+                        driver_executable_path=self._copy_chromedriver_for_uc(cached),
+                        use_subprocess=True,
+                    )
+                driver.set_page_load_timeout(20)
+                return driver
+            except Exception as uc_err:
+                logger.warning(f"⚠️ undetected-chromedriver failed ({uc_err}); falling back to standard ChromeDriver.")
+
+        options = Options()
+        _, chromedriver_path = self._configure_chrome_options(options, is_headless=is_headless, for_uc=False)
 
         if chromedriver_path:
             driver = webdriver.Chrome(service=Service(executable_path=chromedriver_path), options=options)

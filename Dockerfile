@@ -2,17 +2,19 @@ FROM python:3.13-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    HEADLESS_BROWSER=true \
+    HEADLESS_BROWSER=false \
     SOUND_ALERT=false \
     WINDOWS_TOAST=false \
     OPEN_BROWSER_ON_OPEN=false \
     CHROME_BIN=/usr/bin/chromium \
     CHROMEDRIVER_PATH=/usr/bin/chromedriver
 
-# Install Chromium and ChromeDriver for Selenium fallback
+# Install Chromium, ChromeDriver, and Xvfb (virtual display for non-headless stealth Chrome)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     chromium \
     chromium-driver \
+    xvfb \
+    xauth \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
@@ -25,4 +27,4 @@ COPY . .
 
 EXPOSE 8765
 
-CMD ["python", "run.py", "--no-browser"]
+CMD ["xvfb-run", "-a", "--server-args=-screen 0 1280x720x24", "python", "run.py", "--no-browser"]

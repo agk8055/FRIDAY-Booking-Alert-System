@@ -476,6 +476,40 @@ class TestCurlCffiFallbackAndCookies(unittest.TestCase):
         self.assertIsNotNone(result.raw_error)
         self.assertIn("Cloudflare/WAF", result.status_text)
 
+    def test_create_driver_uses_undetected_chromedriver_and_falls_back(self):
+        checker = BMSChecker(headless=True)
+        mock_uc_driver = MagicMock()
+        with patch("checker.UC_AVAILABLE", True), \
+             patch("checker.uc") as mock_uc:
+            mock_uc.ChromeOptions.return_value = MagicMock()
+            mock_uc.Chrome.return_value = mock_uc_driver
+            drv = checker.create_driver()
+            self.assertIs(drv, mock_uc_driver)
+            mock_uc.Chrome.assert_called_once()
+            self.assertTrue(mock_uc.Chrome.call_args.kwargs.get("headless"))
+
+        mock_std_driver = MagicMock()
+        with patch("checker.UC_AVAILABLE", True), \
+             patch("checker.uc") as mock_uc, \
+             patch.object(checker, "_find_cached_selenium_chromedriver", return_value=""), \
+             patch("checker.webdriver.Chrome", return_value=mock_std_driver) as mock_chrome_cls:
+            mock_uc.ChromeOptions.return_value = MagicMock()
+            mock_uc.Chrome.side_effect = RuntimeError("uc failed")
+            drv = checker.create_driver()
+            self.assertIs(drv, mock_std_driver)
+            mock_chrome_cls.assert_called_once()
+
+    def test_render_with_xvfb_display_uses_non_headless_mode(self):
+        checker = BMSChecker(headless=False)
+        mock_uc_driver = MagicMock()
+        with patch.dict("os.environ", {"RENDER": "true", "DISPLAY": ":99"}), \
+             patch("checker.UC_AVAILABLE", True), \
+             patch("checker.uc") as mock_uc:
+            mock_uc.ChromeOptions.return_value = MagicMock()
+            mock_uc.Chrome.return_value = mock_uc_driver
+            checker.create_driver()
+            self.assertFalse(mock_uc.Chrome.call_args.kwargs.get("headless"))
+
 
 if __name__ == "__main__":
     unittest.main()
