@@ -91,7 +91,8 @@ class TestTheatreTargetParsing(unittest.TestCase):
 
 class TestTheatreFirstChecking(unittest.TestCase):
     def setUp(self):
-        self.checker = BMSChecker(headless=True)
+        with patch.dict("os.environ", {"USE_CURL_CFFI": "true"}):
+            self.checker = BMSChecker(headless=True)
         self.theatre_url = (
             "https://in.bookmyshow.com/cinemas/KOCH/"
             "vanitha-cineplex-rgb-laser-4k-3d-atmos-edappally/buytickets/VMHE/20261127"
@@ -333,7 +334,8 @@ class TestTheatreFirstChecking(unittest.TestCase):
 
 class TestCurlCffiFallbackAndCookies(unittest.TestCase):
     def test_sync_cookies_from_driver_and_cooldown(self):
-        checker = BMSChecker(headless=True)
+        with patch.dict("os.environ", {"USE_CURL_CFFI": "true"}):
+            checker = BMSChecker(headless=True)
         target = TargetItem(url="https://in.bookmyshow.com/movies/coimbatore/dune-part-three/ET00491771")
 
         mock_session = MagicMock()
@@ -386,14 +388,33 @@ class TestCurlCffiFallbackAndCookies(unittest.TestCase):
         with patch.dict("os.environ", {}, clear=False):
             import os
             os.environ.pop("CURL_IMPERSONATE", None)
-            self.assertEqual(BMSChecker._resolve_impersonate(), "chrome136")
+            self.assertEqual(BMSChecker._resolve_impersonate(), "chrome152")
             self.assertIn(
-                "Chrome/136.0.0.0",
+                "Chrome/152.0.0.0",
                 BMSChecker._derive_chrome_user_agent(BMSChecker._resolve_impersonate()),
             )
 
+    def test_curl_profile_rotation_and_proxy_forwarding(self):
+        with patch.dict("os.environ", {"USE_CURL_CFFI": "true", "PROXY_URL": "http://user:pass@1.2.3.4:8080"}):
+            checker = BMSChecker(headless=True)
+        with patch("checker.curl_requests.Session") as mock_session_cls:
+            checker._get_curl_session()
+            mock_session_cls.assert_called_with(
+                impersonate="chrome152",
+                proxies={"http": "http://user:pass@1.2.3.4:8080", "https": "http://user:pass@1.2.3.4:8080"},
+            )
+            checker._synced_user_agent = "StaleUA"
+            checker._rotate_curl_session()
+            self.assertEqual(checker._synced_user_agent, "")
+            checker._get_curl_session()
+            mock_session_cls.assert_called_with(
+                impersonate="safari180",
+                proxies={"http": "http://user:pass@1.2.3.4:8080", "https": "http://user:pass@1.2.3.4:8080"},
+            )
+
     def test_sync_cookies_also_syncs_user_agent_to_curl_headers(self):
-        checker = BMSChecker(headless=True)
+        with patch.dict("os.environ", {"USE_CURL_CFFI": "true"}):
+            checker = BMSChecker(headless=True)
         mock_session = MagicMock()
         mock_driver = MagicMock()
         mock_driver.execute_script.return_value = "Mozilla/5.0 CustomChrome/136.0.0.0"
@@ -406,6 +427,54 @@ class TestCurlCffiFallbackAndCookies(unittest.TestCase):
 
         headers = checker._get_curl_headers()
         self.assertEqual(headers.get("User-Agent"), "Mozilla/5.0 CustomChrome/136.0.0.0")
+
+    def test_selenium_falls_back_to_dom_links_when_venue_api_queries_empty(self):
+        checker = BMSChecker(headless=True)
+        theatre_url = (
+            "https://in.bookmyshow.com/cinemas/KOCH/"
+            "vanitha-cineplex-rgb-laser-4k-3d-atmos-edappally/buytickets/VMHE/20261127"
+        )
+        target = TargetItem(
+            url="https://in.bookmyshow.com/movies/kochi/avengers-doomsday/ET00439706",
+            target_theatres=[TheatreTarget(raw_input=theatre_url)],
+        )
+        mock_driver = MagicMock()
+        mock_driver.current_url = theatre_url
+        mock_driver.title = "Vanitha Cineplex | BookMyShow"
+        mock_driver.page_source = (
+            '<html><body><main>'
+            '<a href="/movies/kochi/avengers-doomsday/ET00439706">Avengers: Doomsday</a>'
+            '</main></body></html>'
+        )
+        mock_driver.execute_script.side_effect = [
+            True,
+            {"venueShowtimesFunctionalApi": {"queries": {}}},
+        ]
+
+        result = checker._check_target_theatres_selenium(target, mock_driver)
+        self.assertTrue(result.is_open)
+        self.assertIn("VMHE", result.matched_theatres[0])
+
+    def test_selenium_reports_waf_block_instead_of_false_waiting(self):
+        checker = BMSChecker(headless=True)
+        theatre_url = (
+            "https://in.bookmyshow.com/cinemas/KOCH/"
+            "vanitha-cineplex-rgb-laser-4k-3d-atmos-edappally/buytickets/VMHE/20261127"
+        )
+        target = TargetItem(
+            url="https://in.bookmyshow.com/movies/kochi/avengers-doomsday/ET00439706",
+            target_theatres=[TheatreTarget(raw_input=theatre_url)],
+        )
+        mock_driver = MagicMock()
+        mock_driver.current_url = theatre_url
+        mock_driver.title = "Just a moment..."
+        mock_driver.page_source = "<html><body><div id='challenge-platform'>Verify</div></body></html>"
+        mock_driver.execute_script.side_effect = [True, {}]
+
+        result = checker._check_target_theatres_selenium(target, mock_driver)
+        self.assertFalse(result.is_open)
+        self.assertIsNotNone(result.raw_error)
+        self.assertIn("Cloudflare/WAF", result.status_text)
 
 
 if __name__ == "__main__":

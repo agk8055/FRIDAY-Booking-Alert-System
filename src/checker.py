@@ -40,7 +40,8 @@ class CheckResult:
 
 
 class BMSChecker:
-    _DEFAULT_IMPERSONATE = "chrome136"
+    _DEFAULT_IMPERSONATE = "chrome152"
+    _IMPERSONATE_POOL = ("chrome152", "safari180", "firefox135", "chrome146", "chrome136")
     _CURL_HEADERS = {
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
@@ -55,7 +56,7 @@ class BMSChecker:
     @staticmethod
     def _derive_chrome_user_agent(impersonate: str) -> str:
         match = re.search(r"chrome(\d+)", impersonate or "")
-        major = match.group(1) if match else "136"
+        major = match.group(1) if match else "152"
         return (
             f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             f"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{major}.0.0.0 Safari/537.36"
@@ -70,6 +71,26 @@ class BMSChecker:
         self._curl_cooldown_remaining: int = 0
         self._curl_enabled: bool = os.getenv("USE_CURL_CFFI", "true").strip().lower() in ("1", "true", "yes", "on")
         self._synced_user_agent: str = ""
+        self._impersonate_idx: int = 0
+        self._proxy_url: str = os.getenv("PROXY_URL", "").strip()
+
+    def _current_impersonate(self) -> str:
+        primary = self._resolve_impersonate()
+        if self._impersonate_idx == 0:
+            return primary
+        pool = [primary] + [p for p in self._IMPERSONATE_POOL if p != primary]
+        return pool[self._impersonate_idx % len(pool)]
+
+    def _rotate_curl_session(self) -> None:
+        """Drops the current curl_cffi session and rotates to the next browser TLS profile."""
+        if self._curl_session is not None:
+            try:
+                self._curl_session.close()
+            except Exception:
+                pass
+        self._curl_session = None
+        self._synced_user_agent = ""
+        self._impersonate_idx += 1
 
     def _get_curl_headers(self) -> dict:
         headers = dict(self._CURL_HEADERS)
@@ -81,8 +102,11 @@ class BMSChecker:
         if not CURL_CFFI_AVAILABLE or not self._curl_enabled:
             return None
         if self._curl_session is None:
-            impersonate = self._resolve_impersonate()
-            self._curl_session = curl_requests.Session(impersonate=impersonate)
+            impersonate = self._current_impersonate()
+            kwargs = {"impersonate": impersonate}
+            if self._proxy_url:
+                kwargs["proxies"] = {"http": self._proxy_url, "https": self._proxy_url}
+            self._curl_session = curl_requests.Session(**kwargs)
         return self._curl_session
 
     def _sync_cookies_from_driver(self, driver: webdriver.Chrome) -> None:
@@ -242,6 +266,26 @@ class BMSChecker:
                         stack.append(item)
         return None
 
+    @staticmethod
+    def _has_authoritative_venue_showtimes(state: dict, target_date: str = "") -> bool:
+        """Returns True only when venueShowtimesFunctionalApi contains populated query data."""
+        if not isinstance(state, dict) or "venueShowtimesFunctionalApi" not in state:
+            return False
+        vfa = state.get("venueShowtimesFunctionalApi")
+        queries = vfa.get("queries", {}) if isinstance(vfa, dict) else {}
+        if not isinstance(queries, dict) or not queries:
+            return False
+        for qv in queries.values():
+            if not isinstance(qv, dict):
+                continue
+            if target_date:
+                arg_date = qv.get("originalArgs", {}).get("dateCode", "")
+                if arg_date and arg_date != target_date:
+                    continue
+            if qv.get("data"):
+                return True
+        return False
+
     def _match_movie_in_cinema_page(
         self, html: str, state: dict, target: TargetItem, fallback_name: str, target_date: str = ""
     ) -> Optional[str]:
@@ -250,8 +294,8 @@ class BMSChecker:
         if matched_name:
             return matched_name
 
-        # If authoritative venue showtimes API data is present, don't fall back to page-wide <a> scraping
-        if isinstance(state, dict) and "venueShowtimesFunctionalApi" in state:
+        # If authoritative venue showtimes API data is already populated, don't fall back to <a> scraping
+        if self._has_authoritative_venue_showtimes(state, target_date=target_date):
             return None
 
         soup_cin = BeautifulSoup(html, "html.parser")
@@ -575,8 +619,7 @@ class BMSChecker:
         options.add_argument("--window-size=1280,720")
         options.page_load_strategy = "eager"
 
-        # Aggressive asset & background blocking (saves 85%+ CPU, RAM & network bandwidth)
-        options.add_argument("--blink-settings=imagesEnabled=false")
+        # Background optimization (keep images enabled to avoid Cloudflare headless bot triggers)
         options.add_argument("--disable-extensions")
         options.add_argument("--disable-default-apps")
         options.add_argument("--disable-sync")
@@ -597,15 +640,18 @@ class BMSChecker:
         options.add_argument("--safebrowsing-disable-auto-update")
 
         prefs = {
-            "profile.managed_default_content_settings.images": 2,
             "profile.default_content_setting_values.notifications": 2,
             "profile.managed_default_content_settings.media_stream": 2,
             "profile.default_content_setting_values.geolocation": 2,
         }
         options.add_experimental_option("prefs", prefs)
 
-        user_agent = self._derive_chrome_user_agent(self._resolve_impersonate())
-        options.add_argument(f"user-agent={user_agent}")
+        if self._proxy_url and "@" not in self._proxy_url:
+            options.add_argument(f"--proxy-server={self._proxy_url}")
+
+        user_agent = os.getenv("CHROME_USER_AGENT", "").strip()
+        if user_agent:
+            options.add_argument(f"user-agent={user_agent}")
         options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
         options.add_experimental_option("useAutomationExtension", False)
 
@@ -617,6 +663,17 @@ class BMSChecker:
             driver = webdriver.Chrome(service=Service(executable_path=chromedriver_path), options=options)
         else:
             driver = webdriver.Chrome(options=options)
+        try:
+            driver.execute_cdp_cmd(
+                "Page.addScriptToEvaluateOnNewDocument",
+                {
+                    "source": (
+                        "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+                    )
+                },
+            )
+        except Exception as e:
+            logger.debug(f"Could not apply CDP stealth script: {e}")
         driver.set_page_load_timeout(20)
         return driver
 
@@ -646,11 +703,13 @@ class BMSChecker:
 
                         self._curl_consecutive_failures += 1
                         reason = self._last_curl_reason or "challenge/unsupported format"
+                        self._rotate_curl_session()
                         logger.info(
                             f"🔄 curl_cffi failed ({reason}) for {target.slug or target.url}; engaging Chrome fallback..."
                         )
                 except Exception as e:
                     self._curl_consecutive_failures += 1
+                    self._rotate_curl_session()
                     logger.info(
                         f"🔄 curl_cffi error ({e}) for {target.slug or target.url}; engaging Chrome fallback..."
                     )
@@ -716,6 +775,52 @@ class BMSChecker:
             details={"listed_movies": listed_movies}
         )
 
+    @staticmethod
+    def _is_waf_or_challenge_page(title: str, html: str) -> bool:
+        """Detects Cloudflare or WAF block/challenge pages that prevent BookMyShow content from loading."""
+        title_l = (title or "").lower()
+        html_l = (html or "").lower()
+        if any(marker in title_l for marker in ("just a moment", "attention required", "access denied", "cloudflare")):
+            return True
+        if any(
+            marker in html_l
+            for marker in (
+                "cf-browser-verification",
+                "challenge-platform",
+                "sorry, you have been blocked",
+                "verify you are human",
+            )
+        ):
+            return True
+        return False
+
+    @staticmethod
+    def _wait_for_cinema_page_ready(driver: webdriver.Chrome, timeout: int = 10) -> None:
+        """Waits for Cloudflare JS challenges to clear and BookMyShow state or movie links to render."""
+        try:
+            WebDriverWait(driver, timeout).until(
+                lambda d: d.execute_script(
+                    """
+                    var title = (document.title || '').toLowerCase();
+                    if (title.indexOf('just a moment') !== -1) return false;
+                    if (title.indexOf('attention required') !== -1 || title.indexOf('access denied') !== -1) return true;
+                    var s = window.__INITIAL_STATE__;
+                    if (s && typeof s === 'object' && Object.keys(s).length > 0) {
+                        var vfa = s.venueShowtimesFunctionalApi;
+                        if (vfa && vfa.queries && Object.keys(vfa.queries).length > 0) return true;
+                        if (document.querySelectorAll('a[href*="/movies/"]').length > 0) return true;
+                        if (document.readyState === 'complete') return true;
+                    }
+                    if (document.readyState === 'complete' && document.querySelectorAll('a[href*="/movies/"]').length > 0) {
+                        return true;
+                    }
+                    return false;
+                    """
+                )
+            )
+        except Exception:
+            pass
+
     def _resolve_event_group_selenium(self, target: TargetItem, driver: webdriver.Chrome) -> str:
         """Resolves and caches BookMyShow's unique EventGroup ID (EG...) via Selenium."""
         cache_key = target.event_code or target.url
@@ -728,9 +833,14 @@ class BMSChecker:
             return ""
         try:
             driver.get(target.url)
-            WebDriverWait(driver, 8).until(
-                lambda d: d.execute_script("return document.readyState;") in ["interactive", "complete"]
-            )
+            try:
+                WebDriverWait(driver, 10).until(
+                    lambda d: d.execute_script(
+                        "var s = window.__INITIAL_STATE__; return Boolean(s && s.synopsisStore && s.synopsisStore.synopsis);"
+                    )
+                )
+            except Exception:
+                pass
             state = driver.execute_script("return window.__INITIAL_STATE__;") or {}
             eg = state.get("synopsisStore", {}).get("synopsis", {}).get("eventGroupCode", "")
             if isinstance(eg, str) and eg:
@@ -752,15 +862,16 @@ class BMSChecker:
         matched_url = ""
         matched_movie_name = fallback_name
         first_theatre_url = next((th.url for th in target.target_theatres if th.url), target.url)
+        waf_blocked_reasons = []
+        checked_urls = 0
 
         for th_target in target.target_theatres:
             if not th_target.url:
                 continue
+            checked_urls += 1
             try:
                 driver.get(th_target.url)
-                WebDriverWait(driver, 8).until(
-                    lambda d: d.execute_script("return document.readyState;") in ["interactive", "complete"]
-                )
+                self._wait_for_cinema_page_ready(driver, timeout=10)
                 if self._is_redirected_away_from_date(driver.current_url, th_target.date):
                     logger.debug(
                         f"Theatre URL {th_target.url} redirected to {driver.current_url} "
@@ -768,7 +879,17 @@ class BMSChecker:
                     )
                     continue
                 state = driver.execute_script("return window.__INITIAL_STATE__;") or {}
-                page_source = driver.page_source
+                page_source = driver.page_source or ""
+                title = getattr(driver, "title", "") or ""
+
+                if not state and self._is_waf_or_challenge_page(title, page_source):
+                    reason = title.strip() or "Cloudflare/WAF challenge"
+                    logger.warning(
+                        f"🛡️ Headless Chrome blocked on {th_target.code or th_target.url} ({reason})"
+                    )
+                    waf_blocked_reasons.append(f"{th_target.code or 'venue'}: {reason}")
+                    continue
+
                 found_name = self._match_movie_in_cinema_page(
                     page_source, state, target, fallback_name, target_date=th_target.date
                 )
@@ -804,6 +925,24 @@ class BMSChecker:
                     "matched_theatres": matched_theatres,
                     "booking_url": matched_url
                 }
+            )
+
+        if checked_urls > 0 and len(waf_blocked_reasons) == checked_urls:
+            block_summary = "; ".join(waf_blocked_reasons)
+            return CheckResult(
+                is_open=False,
+                movie_name=fallback_name,
+                city=target.city,
+                status_text=f"Blocked by Cloudflare/WAF in headless Chrome ({block_summary})",
+                booking_url=first_theatre_url,
+                theatres_found=[],
+                matched_theatres=[],
+                details={
+                    "target_theatres": target.theatres_display,
+                    "city": target.city,
+                    "waf_blocked": waf_blocked_reasons,
+                },
+                raw_error=f"Cloudflare/WAF block: {block_summary}",
             )
 
         return CheckResult(
@@ -846,6 +985,17 @@ class BMSChecker:
             pass
 
         state = driver.execute_script("return window.__INITIAL_STATE__;") or {}
+        if not state and self._is_waf_or_challenge_page(getattr(driver, "title", ""), driver.page_source or ""):
+            reason = (getattr(driver, "title", "") or "Cloudflare/WAF challenge").strip()
+            logger.warning(f"🛡️ Headless Chrome blocked on {target.url} ({reason})")
+            return CheckResult(
+                is_open=False,
+                movie_name=target.slug or "Unknown",
+                city=target.city or "Unknown",
+                status_text=f"Blocked by Cloudflare/WAF in headless Chrome ({reason})",
+                booking_url=target.url,
+                raw_error=f"Cloudflare/WAF block: {reason}",
+            )
         syn = state.get("synopsisStore", {}).get("synopsis", {})
         analytics = syn.get("analytics", {})
 

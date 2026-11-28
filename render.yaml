@@ -7,8 +7,16 @@ services:
     envVars:
       - key: HEADLESS_BROWSER
         value: "true"
+      - key: USE_CURL_CFFI
+        value: "true"
+      - key: CURL_IMPERSONATE
+        value: "chrome152"
+      - key: PROXY_URL
+        sync: false
+      - key: RECYCLE_BROWSER_CYCLES
+        value: "10"
       - key: CHECK_INTERVAL_SECONDS
-        value: "60"
+        value: "120"
       - key: SOUND_ALERT
         value: "false"
       - key: WINDOWS_TOAST

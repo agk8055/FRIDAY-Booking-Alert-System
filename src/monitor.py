@@ -9,6 +9,7 @@ import atexit
 import datetime
 import logging
 import os
+import random
 import signal
 import sys
 import threading
@@ -77,15 +78,15 @@ signal.signal(signal.SIGTERM, signal_handler)
 
 
 def calculate_sleep_interval(base_interval: int) -> int:
-    """Calculates sleep time, applying adaptive polling during off-peak night hours if configured."""
-    if not config.adaptive_polling:
-        return base_interval
-    now_hour = datetime.datetime.now().hour
-    if 0 <= now_hour < 7:
-        off_peak_interval = max(base_interval * 4, 300)
-        logger.info(f"🌙 Off-peak night hours (00:00 - 07:00): Adaptive interval set to {off_peak_interval}s.")
-        return off_peak_interval
-    return base_interval
+    """Calculates sleep time with adaptive night polling and jitter to avoid robotic request cadences."""
+    effective = base_interval
+    if config.adaptive_polling:
+        now_hour = datetime.datetime.now().hour
+        if 0 <= now_hour < 7:
+            effective = max(base_interval * 4, 300)
+            logger.info(f"🌙 Off-peak night hours (00:00 - 07:00): Adaptive interval set to {effective}s.")
+    jitter = random.randint(-min(10, max(1, effective // 6)), min(15, max(2, effective // 4)))
+    return max(30, effective + jitter)
 
 
 def print_banner(targets: List[TargetItem]):
