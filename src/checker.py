@@ -739,19 +739,32 @@ class BMSChecker:
                     )
                 except Exception as first_err:
                     cached = "" if uc_driver_path else self._find_cached_selenium_chromedriver()
-                    if not cached:
+                    if cached:
+                        uc_options = uc.ChromeOptions()
+                        chrome_bin, _ = self._configure_chrome_options(
+                            uc_options, is_headless=is_headless, for_uc=True
+                        )
+                        driver = uc.Chrome(
+                            options=uc_options,
+                            headless=is_headless,
+                            browser_executable_path=chrome_bin or None,
+                            driver_executable_path=self._copy_chromedriver_for_uc(cached),
+                            use_subprocess=True,
+                        )
+                    elif not is_headless:
+                        uc_options = uc.ChromeOptions()
+                        chrome_bin, _ = self._configure_chrome_options(
+                            uc_options, is_headless=True, for_uc=True
+                        )
+                        driver = uc.Chrome(
+                            options=uc_options,
+                            headless=True,
+                            browser_executable_path=chrome_bin or None,
+                            driver_executable_path=uc_driver_path,
+                            use_subprocess=True,
+                        )
+                    else:
                         raise first_err
-                    uc_options = uc.ChromeOptions()
-                    chrome_bin, _ = self._configure_chrome_options(
-                        uc_options, is_headless=is_headless, for_uc=True
-                    )
-                    driver = uc.Chrome(
-                        options=uc_options,
-                        headless=is_headless,
-                        browser_executable_path=chrome_bin or None,
-                        driver_executable_path=self._copy_chromedriver_for_uc(cached),
-                        use_subprocess=True,
-                    )
                 driver.set_page_load_timeout(20)
                 return driver
             except Exception as uc_err:

@@ -14,7 +14,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     chromium \
     chromium-driver \
     xvfb \
-    xauth \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
@@ -25,6 +24,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-EXPOSE 8765
+EXPOSE 10000
 
-CMD ["xvfb-run", "-a", "--server-args=-screen 0 1280x720x24", "python", "run.py", "--no-browser"]
+CMD ["sh", "-c", "rm -f /tmp/.X99-lock && Xvfb :99 -screen 0 1280x720x24 -nolisten tcp -ac >/dev/null 2>&1 & export DISPLAY=:99 && exec python run.py --no-browser"]
